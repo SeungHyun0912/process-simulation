@@ -1,0 +1,167 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "recipe_id":"MR-JUICE-001",
+  "recipe_name":"Apple Juice Production Recipe",
+  "version":"1.0.0",
+  "recipe_type":"Master Recipe",
+  "//_1_물리적_요구사항_정의":"레시피가 실행될 수 있는 설비 바인딩 조건 (Physical Model)",
+  "physical_requirements":{
+    "site_id":"SITE-SEOUL-01",
+    "area_id":"AREA-BEVERAGE",
+    "process_cell_id":"CELL-LIQUID-01",
+    "required_unit_class":"STAINLESS_JACKETED_REACTOR"
+  },
+  "//_2_처방_및_파라미터_정의":"공정 투입량, 제어 목표치, 산출량 정의 (Formula & Parameters)",
+  "formula":{
+    "inputs":[
+      {
+        "material_id":"MAT-WATER",
+        "material_name":"Purified Water",
+        "target_value":1000.0,
+        "unit_of_measure":"Liters",
+        "tolerance_percentage":0.5
+      },
+      {
+        "material_id":"MAT-CONC-APPLE",
+        "material_name":"Apple Concentrate",
+        "target_value":150.0,
+        "unit_of_measure":"kg",
+        "tolerance_percentage":0.2
+      }
+    ],
+    "process_parameters":[
+      {
+        "parameter_id":"PARAM-TEMP-PASTEUR",
+        "parameter_name":"Pasteurization Temperature",
+        "target_value":85.0,
+        "unit_of_measure":"Celsius",
+        "lower_limit":82.0,
+        "upper_limit":88.0
+      },
+      {
+        "parameter_id":"PARAM-TIME-HOLD",
+        "parameter_name":"Temperature Holding Time",
+        "target_value":30.0,
+        "unit_of_measure":"Seconds",
+        "lower_limit":30.0,
+        "upper_limit":45.0
+      }
+    ],
+    "outputs":[
+      {
+        "material_id":"PROD-JUICE-APPLE",
+        "material_name":"Pasteurized Apple Juice Base",
+        "expected_yield":1130.0,
+        "unit_of_measure":"Liters"
+      }
+    ]
+  },
+  "//_3_절차적_제어_모델_정의":"S88 계층 구조에 따른 생산 순서 정의 (Procedural Control Model)",
+  "procedure":{
+    "procedure_id":"PROC-JUICE-MAKE",
+    "procedure_name":"Juice Blending and Pasteurization",
+    "unit_procedures":[
+      {
+        "unit_procedure_id":"UP-BLENDING",
+        "unit_procedure_name":"Ingredient Blending Unit Procedure",
+        "target_unit_id":"UNIT-MIXER-01",
+        "operations":[
+          {
+            "operation_id":"OP-CHARGING",
+            "operation_name":"Charge Ingredients",
+            "phases":[
+              {
+                "phase_id":"PH-ADD-WATER",
+                "phase_name":"Add Purified Water Phase",
+                "equipment_module_id":"EM-INLET-WATER",
+                "phase_parameters":{
+                  "target_volume_ref":"MAT-WATER",
+                  "flow_rate_limit_l_per_min":100.0
+                },
+                "//_4_상태_제어_로직":"S88 상태 모델 기반의 전이 로직 매핑",
+                "state_handlers":{
+                  "on_running":"OPEN_INLET_VALVE; MONITOR_FLOW_TOTALIZER",
+                  "on_holding":"CLOSE_INLET_VALVE; PAUSE_TOTALIZER",
+                  "on_aborted":"CLOSE_INLET_VALVE; GENERATE_ALARM"
+                }
+              },
+              {
+                "phase_id":"PH-ADD-CONCENTRATE",
+                "phase_name":"Add Concentrate Phase",
+                "equipment_module_id":"EM-FEED-POWDER",
+                "phase_parameters":{
+                  "target_weight_ref":"MAT-CONC-APPLE"
+                },
+                "state_handlers":{
+                  "on_running":"START_FEEDER; MONITOR_LOAD_CELL",
+                  "on_holding":"STOP_FEEDER",
+                  "on_aborted":"STOP_FEEDER; RESET_FEEDER_LOCK"
+                }
+              }
+            ]
+          },
+          {
+            "operation_id":"OP-AGITATION",
+            "operation_name":"Agitate and Homogenize",
+            "phases":[
+              {
+                "phase_id":"PH-START-AGITATOR",
+                "phase_name":"Agitator Drive Phase",
+                "equipment_module_id":"EM-AGITATOR-01",
+                "phase_parameters":{
+                  "speed_rpm":150.0,
+                  "duration_seconds":600.0
+                },
+                "state_handlers":{
+                  "on_running":"START_MOTOR_RPM_150; COUNTDOWN_TIMER",
+                  "on_holding":"STOP_MOTOR; PAUSE_TIMER",
+                  "on_aborted":"STOP_MOTOR; EMERGENCY_BRAKE"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "unit_procedure_id":"UP-PASTEURIZATION",
+        "unit_procedure_name":"Thermal Pasteurization Unit Procedure",
+        "target_unit_id":"UNIT-HEATER-01",
+        "operations":[
+          {
+            "operation_id":"OP-HEATING",
+            "operation_name":"Heat and Hold",
+            "phases":[
+              {
+                "phase_id":"PH-HEAT-TO-TEMP",
+                "phase_name":"Heat to Target Temp Phase",
+                "equipment_module_id":"EM-JACKET-STEAM",
+                "phase_parameters":{
+                  "target_temperature_ref":"PARAM-TEMP-PASTEUR",
+                  "ramp_rate_c_per_min":5.0
+                },
+                "state_handlers":{
+                  "on_running":"OPEN_STEAM_VALVE_PID; MONITOR_TEMP",
+                  "on_holding":"CLOSE_STEAM_VALVE; ENTER_SAFE_COOLING",
+                  "on_aborted":"CLOSE_STEAM_VALVE; VENT_STEAM"
+                }
+              },
+              {
+                "phase_id":"PH-HOLD-TEMP",
+                "phase_name":"Hold Temperature Phase",
+                "equipment_module_id":"EM-JACKET-STEAM",
+                "phase_parameters":{
+                  "hold_duration_ref":"PARAM-TIME-HOLD"
+                },
+                "state_handlers":{
+                  "on_running":"MAINTAIN_PID_TEMP; TIMER_START",
+                  "on_holding":"CLOSE_STEAM_VALVE; PAUSE_TIMER",
+                  "on_aborted":"CLOSE_STEAM_VALVE; REJECT_BATCH"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
