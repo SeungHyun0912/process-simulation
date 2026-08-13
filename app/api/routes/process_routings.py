@@ -277,6 +277,8 @@ def clone_routing(product_id: str, version: str, db: Session = Depends(get_db)) 
             input_location_id=step.input_location_id,
             output_location_id=step.output_location_id,
             inbound_route_id=step.inbound_route_id,
+            batch_size=step.batch_size,
+            batch_unit=step.batch_unit,
             process_specific=step.process_specific,
             schema_status=step.schema_status,
         )

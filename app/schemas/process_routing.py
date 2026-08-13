@@ -35,6 +35,8 @@ class ProcessStepCreate(BaseModel):
     input_location_id: str | None = None
     output_location_id: str | None = None
     inbound_route_id: str | None = None
+    batch_size: float | None = None
+    batch_unit: str | None = None
     process_specific: dict | None = None
     schema_status: str = "provisional"
     next_steps: list[StepTransitionIn] = []
@@ -57,6 +59,8 @@ class ProcessStepUpdate(BaseModel):
     input_location_id: str | None = None
     output_location_id: str | None = None
     inbound_route_id: str | None = None
+    batch_size: float | None = None
+    batch_unit: str | None = None
     process_specific: dict | None = None
     schema_status: str | None = None
     next_steps: list[StepTransitionIn] | None = None
@@ -83,6 +87,8 @@ class ProcessStepRead(BaseModel):
     input_location_id: str | None
     output_location_id: str | None
     inbound_route_id: str | None
+    batch_size: float | None
+    batch_unit: str | None
     process_specific: dict | None
     schema_status: str
     reference_status: dict | None

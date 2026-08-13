@@ -2,11 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.location import Location, TransportRoute
+from app.models.location import Location, MaterialInboundPlan, TransportRoute
 from app.schemas.location import (
     LocationCreate,
     LocationRead,
     LocationUpdate,
+    MaterialInboundPlanCreate,
+    MaterialInboundPlanRead,
+    MaterialInboundPlanUpdate,
     TransportRouteCreate,
     TransportRouteRead,
     TransportRouteUpdate,
@@ -121,4 +124,64 @@ def update_transport_route(
 def delete_transport_route(route_id: str, db: Session = Depends(get_db)) -> None:
     route = _get_route_or_404(db, route_id)
     db.delete(route)
+    db.commit()
+
+
+def _get_inbound_plan_or_404(db: Session, plan_id: str) -> MaterialInboundPlan:
+    plan = db.query(MaterialInboundPlan).filter_by(plan_id=plan_id).one_or_none()
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"material inbound plan {plan_id} not found")
+    return plan
+
+
+@router.get("/material-inbound-plans", response_model=list[MaterialInboundPlanRead])
+def list_material_inbound_plans(
+    item_id: str | None = None, location_id: str | None = None, db: Session = Depends(get_db)
+) -> list[MaterialInboundPlan]:
+    query = db.query(MaterialInboundPlan)
+    if item_id is not None:
+        query = query.filter_by(item_id=item_id)
+    if location_id is not None:
+        query = query.filter_by(location_id=location_id)
+    return query.order_by(MaterialInboundPlan.id).all()
+
+
+@router.post("/material-inbound-plans", response_model=MaterialInboundPlanRead, status_code=201)
+def create_material_inbound_plan(
+    payload: MaterialInboundPlanCreate, db: Session = Depends(get_db)
+) -> MaterialInboundPlan:
+    if db.query(MaterialInboundPlan).filter_by(plan_id=payload.plan_id).one_or_none():
+        raise HTTPException(status_code=409, detail=f"material inbound plan {payload.plan_id} already exists")
+    _get_location_or_404(db, payload.location_id)
+    plan = MaterialInboundPlan(**payload.model_dump())
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    return plan
+
+
+@router.get("/material-inbound-plans/{plan_id}", response_model=MaterialInboundPlanRead)
+def get_material_inbound_plan(plan_id: str, db: Session = Depends(get_db)) -> MaterialInboundPlan:
+    return _get_inbound_plan_or_404(db, plan_id)
+
+
+@router.patch("/material-inbound-plans/{plan_id}", response_model=MaterialInboundPlanRead)
+def update_material_inbound_plan(
+    plan_id: str, payload: MaterialInboundPlanUpdate, db: Session = Depends(get_db)
+) -> MaterialInboundPlan:
+    plan = _get_inbound_plan_or_404(db, plan_id)
+    updates = payload.model_dump(exclude_unset=True)
+    if "location_id" in updates:
+        _get_location_or_404(db, updates["location_id"])
+    for field, value in updates.items():
+        setattr(plan, field, value)
+    db.commit()
+    db.refresh(plan)
+    return plan
+
+
+@router.delete("/material-inbound-plans/{plan_id}", status_code=204)
+def delete_material_inbound_plan(plan_id: str, db: Session = Depends(get_db)) -> None:
+    plan = _get_inbound_plan_or_404(db, plan_id)
+    db.delete(plan)
     db.commit()

@@ -52,6 +52,8 @@ class ProcessStep(TimestampMixin, Base):
     input_location_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     output_location_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     inbound_route_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    batch_size: Mapped[float | None] = mapped_column(Float, nullable=True)
+    batch_unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
     process_specific: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     schema_status: Mapped[str] = mapped_column(String(32), default="provisional")
     reference_status: Mapped[dict | None] = mapped_column(JSON, nullable=True)

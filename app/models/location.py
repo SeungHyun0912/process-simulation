@@ -30,3 +30,23 @@ class TransportRoute(TimestampMixin, Base):
     transport_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
     transport_time: Mapped[float | None] = mapped_column(Float, nullable=True)
     transport_capacity_per_trip: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class MaterialInboundPlan(TimestampMixin, Base):
+    """The simulation's arrival model: how much raw material shows up, how often, and where.
+
+    This is what bounds a capacity simulation on the input side, alongside resource
+    capacity and Location.storage_capacity (docs/planning/01-meta-schema-design.md section 4).
+    """
+
+    __tablename__ = "material_inbound_plan"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    item_id: Mapped[str] = mapped_column(String(64), index=True)
+    location_id: Mapped[str] = mapped_column(ForeignKey("location.location_id"), index=True)
+    inbound_qty: Mapped[float] = mapped_column(Float)
+    inbound_unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    interval_value: Mapped[float] = mapped_column(Float, default=1)
+    interval_unit: Mapped[str] = mapped_column(String(16), default="day")
+    schema_status: Mapped[str] = mapped_column(String(32), default="provisional")

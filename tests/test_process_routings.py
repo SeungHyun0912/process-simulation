@@ -31,6 +31,25 @@ def test_add_step_derives_std_time_per_and_ignores_direct_input(client) -> None:
     assert step["schema_status"] == "provisional"
 
 
+def test_batch_step_carries_batch_size_and_unit(client) -> None:
+    _create_product(client)
+    client.post("/products/CV-3C-240/routings", json={})
+
+    response = client.post(
+        "/products/CV-3C-240/routings/v1/steps",
+        json={
+            "step_no": "4",
+            "production_type": "batch",
+            "batch_size": 500,
+            "batch_unit": "m",
+        },
+    )
+    assert response.status_code == 201
+    step = response.json()
+    assert step["batch_size"] == 500
+    assert step["batch_unit"] == "m"
+
+
 def test_validate_blocks_on_missing_equipment_group_master(client) -> None:
     _create_product(client)
     client.post("/products/CV-3C-240/routings", json={})

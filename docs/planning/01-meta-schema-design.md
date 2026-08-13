@@ -76,12 +76,29 @@ process_routings[].steps[].logistics     # 스텝 단위 위치 바인딩 (신�
   .output_location_id           # 이 스텝의 산출물이 놓이는 위치
   .inbound_route_id             # input_location_id로 오는 경로 (transport_routes 참조)
 
+process_routings[].steps[].batch_size      # 1배치 생산량 (production_type=batch 스텝에서 사용)
+process_routings[].steps[].batch_unit      # 배치 단위 (CF_UNIT 재사용, entity_scope=routing_step)
+
 inventory_snapshots[]           # 초기 재고/WIP (시뮬레이션 시작 시점 상태, 선택)
   .location_id
   .item_id
   .stock_qty
   .snapshot_at
+
+material_inbound_plans[]        # 원자재 입고 계획 (시뮬레이션의 "투입" 모델)
+  .plan_id
+  .item_id                      # 입고되는 원자재 품목
+  .location_id                  # 입고 위치 (보통 창고)
+  .inbound_qty                  # interval당 입고량
+  .inbound_unit                 # CF_UNIT 재사용
+  .interval_value               # 예: 1
+  .interval_unit                # 예: "day"
+  .schema_status
 ```
+
+**배치 크기 필드 위치에 대한 결정**: `batch_size`/`batch_unit`은 Recipe가 아니라 **ProcessStep**에 둔다. 동일 설비(equipment_group)라도 제품/공정에 따라 투입·산출 배치가 달라질 수 있어, "이 제품의 이 스텝에서 1배치가 얼마인가"는 공정 그래프 관점에서 명확하게 정의되어야 하기 때문이다. Recipe는 필요 시 이 값을 그대로 참조하되 별도로 중복 정의하지 않는다.
+
+**원자재 투입 모델에 대한 결정**: 이 시뮬레이션은 "주문량 충족"이 아니라 "생산 용량(자원 capacity) + 적재 용량(location.storage_capacity) + 원자재 입고 용량(material_inbound_plan) 하에서 얼마나 생산 가능한가"를 보는 **용량 시뮬레이션**이다. 원자재는 무제한이 아니라 `material_inbound_plans[]`에 정의된 수량/주기로만 공급되며, 이 값은 마스터 데이터로 기본값을 갖되 시뮬레이션 실행(`SIMPY_RUNTIME_META`/`RuntimeProfile`) 단계에서 특정 실행에 한해 오버라이드할 수 있어야 한다 (예: "이번 실행만 원자재 입고를 20% 줄여서 본다"). 오버라이드 구조는 [`05-api-design.md`](./05-api-design.md)의 시뮬레이션 실행 API 설계 시 함께 정의한다.
 
 `FIELD_META_REGISTRY.entries`에는 위 경로마다 `FM_LOCATION_*`, `FM_ROUTE_*`, `FM_ROUTING_LOGISTICS_*` 항목을 동일한 포맷(common_field_id, path_patterns, entity_scope, editable, value_role, schema_status)으로 추가한다. 기존 `FM_ROUTING_EQUIPMENT_GROUP`이 `reference_target_paths: ["equipments[].group_id"]`를 갖듯, `FM_ROUTING_LOGISTICS_INPUT_LOCATION`도 `reference_target_paths: ["locations[].location_id"]`를 갖는다.
 

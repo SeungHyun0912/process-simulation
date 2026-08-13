@@ -79,6 +79,8 @@ process_step
   input_location_id (FK -> location.location_id, nullable),   -- 01 확장분
   output_location_id (FK -> location.location_id, nullable),  -- 01 확장분
   inbound_route_id (FK -> transport_route.route_id, nullable),-- 01 확장분
+  batch_size, batch_unit (nullable),     -- 01 확장분, production_type=batch 스텝에서 사용. Recipe가 아니라
+                                          -- 여기(스텝)에 두는 이유: 동일 설비도 제품/공정에 따라 배치가 달라질 수 있음
   process_specific (JSONB, nullable),   -- drawing/extrusion 등 도메인 세부
   schema_status, reference_status (JSONB)
   UNIQUE(routing_id, step_no)
@@ -86,6 +88,13 @@ process_step
 process_step_transition
   id (PK), from_step_id (FK -> process_step.id),
   to_step_no, condition, interpreted_condition
+
+material_inbound_plan                   -- 01 확장분: 원자재 투입(arrival) 모델
+  id (PK), plan_id (UK), item_id, location_id (FK -> location.location_id),
+  inbound_qty, inbound_unit, interval_value, interval_unit,
+  schema_status
+  -- 이 테이블이 시뮬레이션의 "원자재가 얼마나/얼마나 자주 들어오는가"를 정의하는 기본값(master).
+  -- 특정 시뮬레이션 실행에서의 오버라이드는 simulation_run 쪽에서 처리 (below).
 ```
 
 ### 2-4. 업로드/Ingestion — 03번 문서
@@ -126,7 +135,8 @@ runtime_profile                     -- SIMPY_RUNTIME_META 인스턴스
 simulation_run
   id (PK), compile_run_id (FK -> compile_run.id), runtime_profile_id (FK),
   status (queued/running/succeeded/failed), started_at, finished_at,
-  random_seed, replication_count, error_message (nullable)
+  random_seed, replication_count, error_message (nullable),
+  material_inbound_overrides (JSONB, nullable)  -- material_inbound_plan 기본값을 이 실행에서만 덮어쓸 때 사용
 
 simulation_result_summary
   id (PK), simulation_run_id (FK), throughput, avg_wip, avg_lead_time,

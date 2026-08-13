@@ -61,3 +61,40 @@ class TransportRouteRead(BaseModel):
     transport_capacity_per_trip: float | None
     created_at: datetime
     updated_at: datetime
+
+
+class MaterialInboundPlanCreate(BaseModel):
+    plan_id: str
+    item_id: str
+    location_id: str
+    inbound_qty: float
+    inbound_unit: str | None = None
+    interval_value: float = 1
+    interval_unit: str = "day"
+    schema_status: str = "provisional"
+
+
+class MaterialInboundPlanUpdate(BaseModel):
+    item_id: str | None = None
+    location_id: str | None = None
+    inbound_qty: float | None = None
+    inbound_unit: str | None = None
+    interval_value: float | None = None
+    interval_unit: str | None = None
+    schema_status: str | None = None
+
+
+class MaterialInboundPlanRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    plan_id: str
+    item_id: str
+    location_id: str
+    inbound_qty: float
+    inbound_unit: str | None
+    interval_value: float
+    interval_unit: str
+    schema_status: str
+    created_at: datetime
+    updated_at: datetime
