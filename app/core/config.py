@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     app_env: str = "local"
     log_level: str = "info"
     database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/ls_process_simulation"
+    anthropic_api_key: str | None = None
 
 
 @lru_cache

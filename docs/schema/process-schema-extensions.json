@@ -1,0 +1,304 @@
+{
+  "COMMON_FIELD_DICTIONARY": {
+    "_meta": {
+      "schema_name": "COMMON_FIELD_DICTIONARY",
+      "schema_version": "0.2.0-draft",
+      "scope": "location_and_transport_extension",
+      "extends": "docs/schema/process-schema.json#COMMON_FIELD_DICTIONARY",
+      "source_doc": "docs/planning/01-meta-schema-design.md"
+    },
+    "fields": {
+      "CF_LOCATION_ID": {
+        "canonical_key": "location_id",
+        "description_ko": "위치 식별자",
+        "canonical_type": "string",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_LOCATION_TYPE": {
+        "canonical_key": "location_type",
+        "description_ko": "위치 유형",
+        "canonical_type": "string",
+        "enum_domain": ["warehouse", "line_buffer", "process_input", "process_output", "staging"],
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_LOCATION_NAME": {
+        "canonical_key": "location_name",
+        "description_ko": "위치명",
+        "canonical_type": "string",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_STORAGE_CAPACITY": {
+        "canonical_key": "storage_capacity",
+        "description_ko": "위치 최대 저장 용량",
+        "canonical_type": "number",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_ROUTE_ID": {
+        "canonical_key": "route_id",
+        "description_ko": "이동 경로 식별자",
+        "canonical_type": "string",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_FROM_LOCATION_ID": {
+        "canonical_key": "from_location_id",
+        "description_ko": "출발 위치",
+        "canonical_type": "string",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_TO_LOCATION_ID": {
+        "canonical_key": "to_location_id",
+        "description_ko": "도착 위치",
+        "canonical_type": "string",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_TRANSPORT_MODE": {
+        "canonical_key": "transport_mode",
+        "description_ko": "운송 수단",
+        "canonical_type": "string",
+        "enum_domain": ["forklift", "agv", "conveyor", "manual", "crane"],
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_TRANSPORT_DISTANCE": {
+        "canonical_key": "transport_distance",
+        "description_ko": "이동 거리",
+        "canonical_type": "number",
+        "unit_family": "length",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_TRANSPORT_SPEED": {
+        "canonical_key": "transport_speed",
+        "description_ko": "운송 수단 속도",
+        "canonical_type": "number",
+        "unit_family": "speed",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_TRANSPORT_TIME": {
+        "canonical_key": "transport_time",
+        "description_ko": "이동 소요 시간",
+        "canonical_type": "number",
+        "unit_family": "time",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false,
+        "derived_from": ["transport_distance", "transport_speed"],
+        "formula_id": "distance_over_speed"
+      },
+      "CF_TRANSPORT_CAPACITY": {
+        "canonical_key": "transport_capacity_per_trip",
+        "description_ko": "1회 이동 가능 수량",
+        "canonical_type": "number",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_EQUIPMENT_GROUP_NAME": {
+        "canonical_key": "group_name",
+        "description_ko": "설비 그룹명",
+        "canonical_type": "string",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_EQUIPMENT_CAPACITY": {
+        "canonical_key": "capacity",
+        "description_ko": "설비 그룹 동시 처리 용량",
+        "canonical_type": "integer",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      },
+      "CF_RECIPE_ID": {
+        "canonical_key": "recipe_id",
+        "description_ko": "레시피 식별자",
+        "canonical_type": "string",
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "path_sensitive": false
+      }
+    }
+  },
+  "FIELD_META_REGISTRY": {
+    "_meta": {
+      "schema_name": "FIELD_META_REGISTRY",
+      "schema_version": "0.2.0-draft",
+      "scope": "location_and_transport_extension",
+      "extends": "docs/schema/process-schema.json#FIELD_META_REGISTRY"
+    },
+    "entries": {
+      "FM_LOCATION_LOCATION_ID": {
+        "common_field_id": "CF_LOCATION_ID",
+        "canonical_key": "location_id",
+        "path_patterns": ["locations[].location_id"],
+        "entity_scope": "location_master",
+        "canonical_type": "string",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_LOCATION_LOCATION_TYPE": {
+        "common_field_id": "CF_LOCATION_TYPE",
+        "canonical_key": "location_type",
+        "path_patterns": ["locations[].location_type"],
+        "entity_scope": "location_master",
+        "canonical_type": "string",
+        "editable": true,
+        "value_role": "raw",
+        "enum_domain": ["warehouse", "line_buffer", "process_input", "process_output", "staging"],
+        "schema_status": "provisional"
+      },
+      "FM_LOCATION_LOCATION_NAME": {
+        "common_field_id": "CF_LOCATION_NAME",
+        "canonical_key": "location_name",
+        "path_patterns": ["locations[].location_name"],
+        "entity_scope": "location_master",
+        "canonical_type": "string",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_LOCATION_STORAGE_CAPACITY": {
+        "common_field_id": "CF_STORAGE_CAPACITY",
+        "canonical_key": "storage_capacity",
+        "path_patterns": ["locations[].storage_capacity"],
+        "entity_scope": "location_master",
+        "canonical_type": "number",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_ROUTE_ROUTE_ID": {
+        "common_field_id": "CF_ROUTE_ID",
+        "canonical_key": "route_id",
+        "path_patterns": ["transport_routes[].route_id"],
+        "entity_scope": "transport_route_master",
+        "canonical_type": "string",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_ROUTE_FROM_LOCATION_ID": {
+        "common_field_id": "CF_FROM_LOCATION_ID",
+        "canonical_key": "from_location_id",
+        "path_patterns": ["transport_routes[].from_location_id"],
+        "entity_scope": "transport_route_master",
+        "canonical_type": "string",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "reference_target_paths": ["locations[].location_id"]
+      },
+      "FM_ROUTE_TO_LOCATION_ID": {
+        "common_field_id": "CF_TO_LOCATION_ID",
+        "canonical_key": "to_location_id",
+        "path_patterns": ["transport_routes[].to_location_id"],
+        "entity_scope": "transport_route_master",
+        "canonical_type": "string",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional",
+        "reference_target_paths": ["locations[].location_id"]
+      },
+      "FM_ROUTE_TRANSPORT_MODE": {
+        "common_field_id": "CF_TRANSPORT_MODE",
+        "canonical_key": "transport_mode",
+        "path_patterns": ["transport_routes[].transport_mode"],
+        "entity_scope": "transport_route_master",
+        "canonical_type": "string",
+        "editable": true,
+        "value_role": "raw",
+        "enum_domain": ["forklift", "agv", "conveyor", "manual", "crane"],
+        "schema_status": "provisional"
+      },
+      "FM_ROUTE_TRANSPORT_DISTANCE": {
+        "common_field_id": "CF_TRANSPORT_DISTANCE",
+        "canonical_key": "transport_distance",
+        "path_patterns": ["transport_routes[].transport_distance"],
+        "entity_scope": "transport_route_master",
+        "canonical_type": "number",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_ROUTE_TRANSPORT_SPEED": {
+        "common_field_id": "CF_TRANSPORT_SPEED",
+        "canonical_key": "transport_speed",
+        "path_patterns": ["transport_routes[].transport_speed"],
+        "entity_scope": "transport_route_master",
+        "canonical_type": "number",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_ROUTE_TRANSPORT_TIME": {
+        "common_field_id": "CF_TRANSPORT_TIME",
+        "canonical_key": "transport_time",
+        "path_patterns": ["transport_routes[].transport_time"],
+        "entity_scope": "transport_route_master",
+        "canonical_type": "number",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_ROUTE_TRANSPORT_CAPACITY": {
+        "common_field_id": "CF_TRANSPORT_CAPACITY",
+        "canonical_key": "transport_capacity_per_trip",
+        "path_patterns": ["transport_routes[].transport_capacity_per_trip"],
+        "entity_scope": "transport_route_master",
+        "canonical_type": "number",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_EQUIPMENT_GROUP_NAME": {
+        "common_field_id": "CF_EQUIPMENT_GROUP_NAME",
+        "canonical_key": "group_name",
+        "path_patterns": ["equipments[].group_name"],
+        "entity_scope": "equipment_master",
+        "canonical_type": "string",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_EQUIPMENT_CAPACITY": {
+        "common_field_id": "CF_EQUIPMENT_CAPACITY",
+        "canonical_key": "capacity",
+        "path_patterns": ["equipments[].capacity"],
+        "entity_scope": "equipment_master",
+        "canonical_type": "integer",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      },
+      "FM_RECIPE_RECIPE_ID": {
+        "common_field_id": "CF_RECIPE_ID",
+        "canonical_key": "recipe_id",
+        "path_patterns": ["recipes[].recipe_id"],
+        "entity_scope": "recipe_context",
+        "canonical_type": "string",
+        "editable": true,
+        "value_role": "raw",
+        "schema_status": "provisional"
+      }
+    }
+  }
+}

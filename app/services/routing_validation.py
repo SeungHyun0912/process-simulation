@@ -1,0 +1,82 @@
+"""Routing-level validation gates shared by the /validate, /publish, and compile-run flows.
+
+Mirrors the graph_validation_rules in docs/schema/simpy-schema-compiler.json
+(COMPILER_MAPPING_RULE). Compile-time-only gates (e.g. unresolved processing time)
+live in app/services/compiler.py instead, since a routing may legitimately be
+published before every step's timing is resolved.
+"""
+
+from sqlalchemy.orm import Session
+
+from app.models.equipment import EquipmentGroup
+from app.models.process_routing import ProcessRouting
+
+
+def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
+    steps = routing.steps
+    step_nos = {s.step_no for s in steps}
+    blocking_errors = []
+    warnings = []
+
+    if not steps:
+        blocking_errors.append(
+            {"rule_id": "BLOCK_GRAPH_INCOMPLETE", "path": "steps", "message": "routing has no steps"}
+        )
+
+    for step in steps:
+        for transition in step.next_steps:
+            if transition.to_step_no not in step_nos:
+                blocking_errors.append(
+                    {
+                        "rule_id": "BLOCK_DANGLING_NEXT_STEP",
+                        "path": f"steps[{step.step_no}].next_steps",
+                        "message": (
+                            f"{step.step_no} -> {transition.to_step_no} but step "
+                            f"{transition.to_step_no} is missing"
+                        ),
+                    }
+                )
+
+        if step.equipment_group:
+            resolved = (
+                db.query(EquipmentGroup).filter_by(group_id=step.equipment_group).one_or_none()
+                is not None
+            )
+            equipment_group_ref = "resolved" if resolved else "master_missing"
+            if not resolved:
+                blocking_errors.append(
+                    {
+                        "rule_id": "BLOCK_MISSING_RESOURCE_MASTER",
+                        "path": f"steps[{step.step_no}].equipment_group",
+                        "message": f"{step.equipment_group} is not resolved in equipment_group master",
+                    }
+                )
+        else:
+            equipment_group_ref = "provisional"
+
+        step.reference_status = {"equipment_group_ref": equipment_group_ref}
+
+        if step.schema_status == "provisional":
+            warnings.append(
+                {
+                    "rule_id": "ALLOW_PROVISIONAL_STEP",
+                    "path": f"steps[{step.step_no}]",
+                    "message": f"step {step.step_no} is provisional",
+                }
+            )
+
+    if not steps:
+        completeness = "incomplete"
+    elif blocking_errors:
+        completeness = "blocked"
+    elif any(s.schema_status == "provisional" for s in steps):
+        completeness = "provisional"
+    else:
+        completeness = "complete"
+
+    routing.graph_completeness_status = completeness
+    return {
+        "graph_completeness_status": completeness,
+        "blocking_errors": blocking_errors,
+        "warnings": warnings,
+    }

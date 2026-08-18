@@ -1,0 +1,223 @@
+"""Executes a compiled_graph_object as a SimPy discrete-event simulation.
+
+v1 scope and simplifications (deliberately narrow -- see docs/planning/00-overview.md
+roadmap; extend these as real usage demands it):
+
+- Only flow_type in {sequential, parallel, merge} drives execution. Transition
+  `condition` strings are stored but never evaluated (matches
+  COMPILER_MAPPING_RULE.transition_compilation_rules: a non-empty condition is
+  documented as "application_defined_expression", i.e. undefined without a rule
+  engine -- out of scope here).
+- A step with N successors via a parallel-split divides its output qty equally
+  across them. A merge step consumes exactly 1 unit (or 1 batch) from EACH of
+  its predecessor containers per cycle -- no defined split-ratio field exists
+  yet, so equal division is the documented v1 assumption.
+- Continuous steps process in chunks of up to CHUNK_QTY_CAP units per
+  resource-hold cycle (not unit-by-unit) so a 30-day run stays a few hundred
+  events per step instead of millions. Batch steps process exactly one batch
+  per cycle. setup_time is applied once, on a step's first cycle only.
+- Lead time is estimated via Little's Law (avg_wip / throughput_rate), not by
+  tracking individual unit dwell time -- there's no per-unit identity in this
+  chunked model.
+- scenario_toggles (breakdown/PM/defect/rework/shift-calendar) are accepted
+  but ignored: none are implemented yet, consistent with them defaulting to
+  False in SIMPY_RUNTIME_META.
+- If two source steps both draw from the same material_inbound_plan, each
+  gets an independent copy of that supply (no shared-supply contention). Real
+  topologies typically have one entry point per raw material; revisit if that
+  changes.
+"""
+
+import simpy
+
+CHUNK_QTY_CAP = 500
+
+_MINUTES_PER_UNIT = {"minute": 1, "hour": 60, "day": 24 * 60}
+
+
+def _to_minutes(value: float, unit: str) -> float:
+    return value * _MINUTES_PER_UNIT.get(unit, _MINUTES_PER_UNIT["day"])
+
+
+def _match_inbound_plan(step: dict, plans: list[dict]) -> dict | None:
+    candidates = [p for p in plans if p["item_id"] == step["input_item_id"]]
+    if not candidates:
+        return None
+    if step.get("input_location_id"):
+        for plan in candidates:
+            if plan["location_id"] == step["input_location_id"]:
+                return plan
+    return candidates[0]
+
+
+def run_simulation(
+    compiled_graph_object: dict,
+    time_control: dict,
+    output_control: dict,
+    inbound_plans: list[dict],
+    inbound_overrides: dict[str, float] | None = None,
+) -> dict:
+    nodes = {n["step_no"]: n for n in compiled_graph_object["nodes"]}
+    proc_by_step = {p["step_no"]: p for p in compiled_graph_object["processing_time_plan"]}
+    queue_by_step = {q["step_no"]: q for q in compiled_graph_object["queue_plan"]}
+    resource_key_by_step = {
+        rb["step_no"]: rb["resource_key"] for rb in compiled_graph_object["resource_bindings"]
+    }
+    resource_capacity = {
+        rb["resource_key"]: rb["capacity"] for rb in compiled_graph_object["resource_bindings"]
+    }
+
+    predecessors: dict[str, list[str]] = {step_no: [] for step_no in nodes}
+    successors: dict[str, list[str]] = {step_no: [] for step_no in nodes}
+    for t in compiled_graph_object["transitions"]:
+        predecessors[t["to_step_no"]].append(t["from_step_no"])
+        successors[t["from_step_no"]].append(t["to_step_no"])
+
+    end_time = _to_minutes(time_control.get("duration_days", 30), "day")
+    inbound_overrides = inbound_overrides or {}
+
+    env = simpy.Environment()
+
+    containers: dict[str, dict[str, simpy.Container]] = {}
+    for step_no, node in nodes.items():
+        capacity = queue_by_step.get(step_no, {}).get("capacity") or float("inf")
+        preds = predecessors[step_no]
+        if preds:
+            containers[step_no] = {p: simpy.Container(env, capacity=capacity, init=0) for p in preds}
+        else:
+            containers[step_no] = {"__inbound__": simpy.Container(env, capacity=capacity, init=0)}
+
+    resources = {key: simpy.Resource(env, capacity=cap) for key, cap in resource_capacity.items()}
+
+    event_log: list[dict] = []
+    wip_snapshots: list[dict] = []
+    busy_time_by_resource = {key: 0.0 for key in resources}
+
+    def put_downstream(from_step_no: str, qty: float):
+        succs = successors[from_step_no]
+        if not succs:
+            event_log.append(
+                {"sim_time": env.now, "event_type": "exit", "step_no": from_step_no, "qty": qty}
+            )
+            return
+        share = qty / len(succs)
+        for succ in succs:
+            yield containers[succ][from_step_no].put(share)
+
+    def step_process(step_no: str):
+        node = nodes[step_no]
+        proc = proc_by_step[step_no]
+        is_merge = node["flow_type"] == "merge"
+        is_batch = node["production_type"] == "batch"
+        std_time_per = proc["std_time_per"]
+        setup_remaining = proc.get("setup_time") or 0
+        batch_size = node.get("batch_size") or 1
+        resource_key = resource_key_by_step.get(step_no)
+        resource = resources.get(resource_key)
+        step_containers = containers[step_no]
+
+        while True:
+            if is_merge:
+                unit = batch_size if is_batch else 1
+                for container in step_containers.values():
+                    yield container.get(unit)
+                qty = unit
+            else:
+                container = next(iter(step_containers.values()))
+                if is_batch:
+                    yield container.get(batch_size)
+                    qty = batch_size
+                else:
+                    yield container.get(1)
+                    qty = 1
+                    extra = min(container.level, CHUNK_QTY_CAP - 1)
+                    if extra > 0:
+                        yield container.get(extra)
+                        qty += extra
+
+            proc_time = (qty / batch_size if is_batch else qty) * std_time_per + setup_remaining
+            setup_remaining = 0
+
+            if resource is not None:
+                with resource.request() as req:
+                    yield req
+                    start_time = env.now
+                    yield env.timeout(proc_time)
+                    busy_time_by_resource[resource_key] += env.now - start_time
+            else:
+                start_time = env.now
+                yield env.timeout(proc_time)
+
+            event_log.append(
+                {
+                    "sim_time": start_time,
+                    "event_type": "process",
+                    "step_no": step_no,
+                    "resource_key": resource_key,
+                    "qty": qty,
+                }
+            )
+            yield env.process(put_downstream(step_no, qty))
+
+    def inbound_process(step_no: str, plan: dict):
+        container = containers[step_no]["__inbound__"]
+        qty = inbound_overrides.get(plan["plan_id"], plan["inbound_qty"])
+        interval_minutes = _to_minutes(plan["interval_value"], plan["interval_unit"])
+        while True:
+            yield container.put(qty)
+            event_log.append(
+                {"sim_time": env.now, "event_type": "inbound", "item_id": plan["item_id"], "qty": qty}
+            )
+            yield env.timeout(interval_minutes)
+
+    def wip_snapshot_process(interval_minutes: float):
+        while True:
+            by_step = {step_no: sum(c.level for c in conts.values()) for step_no, conts in containers.items()}
+            wip_snapshots.append({"sim_time": env.now, "total_wip": sum(by_step.values()), "by_step": by_step})
+            yield env.timeout(interval_minutes)
+
+    for step_no, node in nodes.items():
+        env.process(step_process(step_no))
+        if not predecessors[step_no]:
+            plan = _match_inbound_plan(node, inbound_plans)
+            if plan is not None:
+                env.process(inbound_process(step_no, plan))
+
+    if output_control.get("collect_wip_snapshot", True):
+        snapshot_interval = _to_minutes(
+            output_control.get("snapshot_interval", 60),
+            output_control.get("snapshot_interval_unit", "minute"),
+        )
+        env.process(wip_snapshot_process(snapshot_interval))
+
+    env.run(until=end_time)
+
+    exit_qty = sum(e["qty"] for e in event_log if e["event_type"] == "exit")
+    throughput_per_day = exit_qty / (end_time / _MINUTES_PER_UNIT["day"]) if end_time else 0.0
+    avg_wip = sum(s["total_wip"] for s in wip_snapshots) / len(wip_snapshots) if wip_snapshots else None
+    throughput_rate = exit_qty / end_time if end_time else 0.0
+    avg_lead_time = (avg_wip / throughput_rate) if (avg_wip is not None and throughput_rate > 0) else None
+
+    resource_utilization = {
+        key: (busy / end_time if end_time else 0.0) for key, busy in busy_time_by_resource.items()
+    }
+    bottleneck_step_no = None
+    if resource_utilization:
+        bottleneck_resource = max(resource_utilization, key=resource_utilization.get)
+        for step_no, key in resource_key_by_step.items():
+            if key == bottleneck_resource:
+                bottleneck_step_no = step_no
+                break
+
+    return {
+        "event_log": event_log,
+        "wip_snapshots": wip_snapshots,
+        "summary": {
+            "throughput_total": exit_qty,
+            "throughput_per_day": throughput_per_day,
+            "avg_wip": avg_wip,
+            "avg_lead_time": avg_lead_time,
+            "resource_utilization": resource_utilization,
+            "bottleneck_step_no": bottleneck_step_no,
+        },
+    }

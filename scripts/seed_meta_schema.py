@@ -1,4 +1,8 @@
-"""Seed meta_common_field / meta_field_mapping from docs/schema/process-schema.json.
+"""Seed meta_common_field / meta_field_mapping from docs/schema/process-schema*.json.
+
+Loads the original schema plus any *-extensions.json files layered on top of it
+(see docs/planning/01-meta-schema-design.md for why extensions live in a
+separate file instead of editing the original).
 
 Usage (run from repo root, with the venv active):
     python -m scripts.seed_meta_schema
@@ -11,12 +15,15 @@ from app.db.base import Base
 from app.db.session import SessionLocal, engine
 from app.models.meta_schema import MetaCommonField, MetaFieldMapping
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "docs" / "schema" / "process-schema.json"
+SCHEMA_DIR = Path(__file__).resolve().parent.parent / "docs" / "schema"
+SCHEMA_PATHS = [
+    SCHEMA_DIR / "process-schema.json",
+    SCHEMA_DIR / "process-schema-extensions.json",
+]
 
 
-def _upsert_common_fields(db, common_field_dict: dict) -> dict[str, int]:
+def _upsert_common_fields(db, common_field_dict: dict, code_to_id: dict[str, int]) -> None:
     schema_version = common_field_dict["_meta"]["schema_version"]
-    code_to_id: dict[str, int] = {}
 
     for code, field in common_field_dict["fields"].items():
         row = db.query(MetaCommonField).filter_by(common_field_code=code).one_or_none()
@@ -38,8 +45,6 @@ def _upsert_common_fields(db, common_field_dict: dict) -> dict[str, int]:
 
         db.flush()
         code_to_id[code] = row.id
-
-    return code_to_id
 
 
 def _upsert_field_mappings(db, field_meta_registry: dict, code_to_id: dict[str, int]) -> None:
@@ -67,17 +72,19 @@ def _upsert_field_mappings(db, field_meta_registry: dict, code_to_id: dict[str, 
 
 def seed() -> None:
     Base.metadata.create_all(bind=engine)
-    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schemas = [json.loads(path.read_text(encoding="utf-8")) for path in SCHEMA_PATHS if path.exists()]
 
     db = SessionLocal()
     try:
-        code_to_id = _upsert_common_fields(db, schema["COMMON_FIELD_DICTIONARY"])
-        _upsert_field_mappings(db, schema["FIELD_META_REGISTRY"], code_to_id)
+        code_to_id: dict[str, int] = {}
+        total_mappings = 0
+        for schema in schemas:
+            _upsert_common_fields(db, schema["COMMON_FIELD_DICTIONARY"], code_to_id)
+        for schema in schemas:
+            _upsert_field_mappings(db, schema["FIELD_META_REGISTRY"], code_to_id)
+            total_mappings += len(schema["FIELD_META_REGISTRY"]["entries"])
         db.commit()
-        print(
-            f"seeded {len(code_to_id)} common fields and "
-            f"{len(schema['FIELD_META_REGISTRY']['entries'])} field mappings"
-        )
+        print(f"seeded {len(code_to_id)} common fields and {total_mappings} field mappings")
     finally:
         db.close()
 
