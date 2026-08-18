@@ -69,10 +69,18 @@
 | P0 | Meta Schema 확장 설계 + RDB 스키마 설계 확정 | `01`, `04` 문서 확정, ERD | 완료 |
 | P1 | Process 관리 CRUD API (수동 입력 기준) | `02`, `05` 중 CRUD 부분 구현 | 완료 |
 | P2 | Compiler 구현체 (`COMPILER_MAPPING_RULE` → 코드) | `ProcessRouting` → `compiled_graph_object` 변환기, `RuntimeProfile`/`CompileRun` | 완료 |
-| P3 | SimPy Runtime 실행기 + 결과 저장/조회 API | `05` 중 시뮬레이션 실행/결과 API | 진행 예정 |
+| P3 | SimPy Runtime 실행기 + 결과 저장/조회 API | `05` 중 시뮬레이션 실행/결과 API | 완료 |
 | P4 | LLM 기반 업로드 파이프라인 | `03` 문서 구현 (Excel/JSON 업로드 → 초안 생성 → 검수 UI 연동) | 진행 예정 |
 
 **P2 구현 메모**: 라우팅 레벨 검증(`/validate`, `/publish` — 끊긴 참조, 미해결 설비마스터)과 컴파일 전용 검증(`BLOCK_UNRESOLVED_PROCESSING_TIME` — std_speed 미해결)을 분리했다. 라우팅은 일부 스텝의 시간 정보가 아직 없어도 `published` 상태가 될 수 있지만, 컴파일은 그 상태에서 막힌다 (`compile_run.status = "blocked"`로 기록되고 `compiled_graph_object`는 `null`). 컴파일 실패는 `/publish`처럼 예외를 던지지 않고 `CompileRun` 행으로 남겨 감사 가능하게 했다.
+
+**P3 구현 메모**: `app/services/simulation.py`가 `compiled_graph_object`를 실제 SimPy 이산 이벤트 시뮬레이션으로 실행한다. 핵심 v1 단순화 사항(향후 실사용 검증 후 확장 대상):
+- 연속(continuous) 스텝은 단위별이 아니라 **최대 500개 단위 묶음(chunk)** 단위로 자원을 점유·처리한다 — 그렇지 않으면 30일 기본 시뮬레이션에서 스텝당 이벤트가 수백만 건이 되어 비현실적이다.
+- **병렬 분기(parallel_split)는 산출량을 분기 수만큼 균등 분배**, **병합(merge)은 각 선행 분기에서 1개씩(또는 batch 스텝이면 1배치씩) 정확히 1:1로 소비** — 스키마에 분배 비율 필드가 없어 균등 분배를 v1 기본값으로 채택했다.
+- transition의 `condition` 문자열은 저장만 하고 실행에는 반영하지 않는다(스펙상 "application_defined_expression"으로 미정의).
+- 평균 리드타임은 개별 유닛을 추적하지 않고 **리틀의 법칙**(avg_wip / throughput_rate)으로 근사한다.
+- SimulationRun은 **동기 실행**이다(대기열/워커 없음) — 5-스텝 케이블 라인 30일 시뮬레이션이 실제로 약 1.2초 걸림을 확인했고, 이 정도 규모에서는 비동기 인프라가 아직 필요 없다고 판단했다.
+- 원자재 입고(`MaterialInboundPlan`)는 컴파일 시점이 아니라 **시뮬레이션 실행 시점**에 조회한다 — `material_inbound_overrides`로 실행별 오버라이드가 가능해야 한다는 요구사항([`01-meta-schema-design.md`](./01-meta-schema-design.md) 참고) 때문에, 그래프 위상(컴파일 결과)과 입고량(실행 시점 가변값)의 책임을 분리했다.
 
 P4를 마지막에 두는 이유: LLM 매핑의 목표 스키마(Meta Schema)와 저장 방식(RDB)이 먼저 안정화되어야 LLM 추출 결과의 정확도를 판단할 기준이 생기기 때문. 단, 문서화 자체는 지금 단계에서 함께 진행한다.
 

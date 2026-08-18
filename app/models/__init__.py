@@ -10,3 +10,9 @@ from app.models.process_routing import (  # noqa: F401
 from app.models.product import Product  # noqa: F401
 from app.models.recipe import Recipe  # noqa: F401
 from app.models.runtime_profile import RuntimeProfile  # noqa: F401
+from app.models.simulation_run import (  # noqa: F401
+    SimulationEventLog,
+    SimulationResultSummary,
+    SimulationRun,
+    SimulationWipSnapshot,
+)
