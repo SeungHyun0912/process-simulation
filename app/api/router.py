@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    compile_runs,
     equipment,
     health,
     location,
@@ -8,6 +9,7 @@ from app.api.routes import (
     process_routings,
     products,
     recipes,
+    runtime_profiles,
 )
 
 api_router = APIRouter()
@@ -17,4 +19,6 @@ api_router.include_router(equipment.router)
 api_router.include_router(location.router)
 api_router.include_router(recipes.router)
 api_router.include_router(process_routings.router)
+api_router.include_router(runtime_profiles.router)
+api_router.include_router(compile_runs.router)
 api_router.include_router(meta_schema.router)

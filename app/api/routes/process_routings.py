@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.equipment import EquipmentGroup
 from app.models.process_routing import ProcessRouting, ProcessStep, ProcessStepTransition
 from app.models.product import Product
 from app.schemas.process_routing import (
@@ -13,6 +12,7 @@ from app.schemas.process_routing import (
     ProcessStepUpdate,
     ValidationReport,
 )
+from app.services.routing_validation import build_validation_report
 
 router = APIRouter(prefix="/products/{product_id}/routings", tags=["process-routings"])
 
@@ -72,76 +72,6 @@ def _apply_step_fields(step: ProcessStep, data: dict) -> None:
                     interpreted_condition="always_true" if not condition else "application_defined_expression",
                 )
             )
-
-
-def _build_validation_report(routing: ProcessRouting, db: Session) -> dict:
-    steps = routing.steps
-    step_nos = {s.step_no for s in steps}
-    blocking_errors = []
-    warnings = []
-
-    if not steps:
-        blocking_errors.append(
-            {"rule_id": "BLOCK_GRAPH_INCOMPLETE", "path": "steps", "message": "routing has no steps"}
-        )
-
-    for step in steps:
-        for transition in step.next_steps:
-            if transition.to_step_no not in step_nos:
-                blocking_errors.append(
-                    {
-                        "rule_id": "BLOCK_DANGLING_NEXT_STEP",
-                        "path": f"steps[{step.step_no}].next_steps",
-                        "message": (
-                            f"{step.step_no} -> {transition.to_step_no} but step "
-                            f"{transition.to_step_no} is missing"
-                        ),
-                    }
-                )
-
-        if step.equipment_group:
-            resolved = (
-                db.query(EquipmentGroup).filter_by(group_id=step.equipment_group).one_or_none()
-                is not None
-            )
-            equipment_group_ref = "resolved" if resolved else "master_missing"
-            if not resolved:
-                blocking_errors.append(
-                    {
-                        "rule_id": "BLOCK_MISSING_RESOURCE_MASTER",
-                        "path": f"steps[{step.step_no}].equipment_group",
-                        "message": f"{step.equipment_group} is not resolved in equipment_group master",
-                    }
-                )
-        else:
-            equipment_group_ref = "provisional"
-
-        step.reference_status = {"equipment_group_ref": equipment_group_ref}
-
-        if step.schema_status == "provisional":
-            warnings.append(
-                {
-                    "rule_id": "ALLOW_PROVISIONAL_STEP",
-                    "path": f"steps[{step.step_no}]",
-                    "message": f"step {step.step_no} is provisional",
-                }
-            )
-
-    if not steps:
-        completeness = "incomplete"
-    elif blocking_errors:
-        completeness = "blocked"
-    elif any(s.schema_status == "provisional" for s in steps):
-        completeness = "provisional"
-    else:
-        completeness = "complete"
-
-    routing.graph_completeness_status = completeness
-    return {
-        "graph_completeness_status": completeness,
-        "blocking_errors": blocking_errors,
-        "warnings": warnings,
-    }
 
 
 @router.get("", response_model=list[ProcessRoutingRead])
@@ -221,7 +151,7 @@ def delete_step(product_id: str, version: str, step_no: str, db: Session = Depen
 @router.post("/{version}/validate", response_model=ValidationReport)
 def validate_routing(product_id: str, version: str, db: Session = Depends(get_db)) -> dict:
     routing = _get_routing_or_404(db, product_id, version)
-    report = _build_validation_report(routing, db)
+    report = build_validation_report(routing, db)
     if not report["blocking_errors"] and routing.status == "draft":
         routing.status = "validated"
     db.commit()
@@ -231,7 +161,7 @@ def validate_routing(product_id: str, version: str, db: Session = Depends(get_db
 @router.post("/{version}/publish", response_model=ProcessRoutingRead)
 def publish_routing(product_id: str, version: str, db: Session = Depends(get_db)) -> ProcessRouting:
     routing = _get_routing_or_404(db, product_id, version)
-    report = _build_validation_report(routing, db)
+    report = build_validation_report(routing, db)
     if report["graph_completeness_status"] in ("incomplete", "blocked"):
         raise HTTPException(
             status_code=409,
