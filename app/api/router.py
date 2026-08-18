@@ -4,6 +4,7 @@ from app.api.routes import (
     compile_runs,
     equipment,
     health,
+    ingestion,
     location,
     meta_schema,
     process_routings,
@@ -23,4 +24,5 @@ api_router.include_router(process_routings.router)
 api_router.include_router(runtime_profiles.router)
 api_router.include_router(compile_runs.router)
 api_router.include_router(simulation_runs.router)
+api_router.include_router(ingestion.router)
 api_router.include_router(meta_schema.router)

@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -33,6 +34,21 @@ def db_session():
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture
+def seeded_meta_schema(db_session):
+    """Seed meta_common_field/meta_field_mapping into the test DB for ingestion tests."""
+    from scripts.seed_meta_schema import SCHEMA_PATHS, _upsert_common_fields, _upsert_field_mappings
+
+    schemas = [json.loads(p.read_text(encoding="utf-8")) for p in SCHEMA_PATHS if p.exists()]
+    code_to_id: dict[str, int] = {}
+    for schema in schemas:
+        _upsert_common_fields(db_session, schema["COMMON_FIELD_DICTIONARY"], code_to_id)
+    for schema in schemas:
+        _upsert_field_mappings(db_session, schema["FIELD_META_REGISTRY"], code_to_id)
+    db_session.commit()
+    return code_to_id
 
 
 @pytest.fixture
