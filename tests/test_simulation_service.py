@@ -17,8 +17,14 @@ def _node(step_no, flow_type="sequential", production_type="continuous", batch_s
     }
 
 
-def _proc(step_no, std_time_per, setup_time=0):
-    return {"step_no": step_no, "std_time_per": std_time_per, "setup_time": setup_time}
+def _proc(step_no, std_time_per, setup_time=0, input_qty_per=None, loss_rate=0.0):
+    return {
+        "step_no": step_no,
+        "std_time_per": std_time_per,
+        "setup_time": setup_time,
+        "input_qty_per": input_qty_per,
+        "loss_rate": loss_rate,
+    }
 
 
 def _resource_binding(step_no, resource_key, capacity):
@@ -284,6 +290,87 @@ def test_terminal_step_with_two_outputs_logs_two_exit_events():
 
     exits = {e["item_id"]: e["qty"] for e in result["event_log"] if e["event_type"] == "exit"}
     assert exits == {"MAIN": 90.0, "SCRAP": 10.0}
+
+
+def test_input_qty_per_scales_consumption_from_container():
+    # docs/planning/07-schema-gap-review.md 3-3: Recipe.length_factor.input_per_output (or a
+    # step's own input_qty_per) means "N units of input per 1 unit of output" -- e.g. cable
+    # drawing consumes more raw length than the finished length it produces. With
+    # input_qty_per=2.0 and a 100-unit supply, only 50 output units can be produced
+    # (2 consumed per output, 100/2 = 50), all consumed in a single chunk (well under
+    # CHUNK_QTY_CAP) so there's no leftover.
+    graph = {
+        "nodes": [_node("1")],
+        "transitions": [],
+        "resource_bindings": [_resource_binding("1", "R1", 1)],
+        "processing_time_plan": [_proc("1", std_time_per=1.0, input_qty_per=2.0)],
+        "queue_plan": [{"step_no": "1", "capacity": None}],
+    }
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 100)]
+
+    result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
+
+    assert result["summary"]["throughput_total"] == 50
+    process_events = [e for e in result["event_log"] if e["event_type"] == "process"]
+    assert [e["qty"] for e in process_events] == [50]
+
+
+def test_input_qty_per_scales_batch_consumption():
+    graph = {
+        "nodes": [_node("1", production_type="batch", batch_size=10)],
+        "transitions": [],
+        "resource_bindings": [_resource_binding("1", "R1", 1)],
+        "processing_time_plan": [_proc("1", std_time_per=1.0, input_qty_per=2.0)],
+        "queue_plan": [{"step_no": "1", "capacity": None}],
+    }
+    # Exactly enough for one batch (10 output units * 2 input-per-output = 20 consumed).
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 20)]
+
+    result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
+
+    assert result["summary"]["throughput_total"] == 10
+
+
+def test_loss_rate_reduces_yield_but_not_processing_time():
+    # loss_rate=0.1 means 10% of processed qty is scrapped before reaching downstream/exit,
+    # but the resource still spends time on the full (pre-loss) qty it pulled and processed.
+    graph = {
+        "nodes": [_node("1")],
+        "transitions": [],
+        "resource_bindings": [_resource_binding("1", "R1", 1)],
+        "processing_time_plan": [_proc("1", std_time_per=1.0, loss_rate=0.1)],
+        "queue_plan": [{"step_no": "1", "capacity": None}],
+    }
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 100)]
+
+    result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
+
+    assert result["summary"]["throughput_total"] == 90.0
+    process_events = [e for e in result["event_log"] if e["event_type"] == "process"]
+    assert [e["qty"] for e in process_events] == [100]  # full qty processed, time charged on it
+    loss_events = [e for e in result["event_log"] if e["event_type"] == "loss"]
+    assert [e["qty"] for e in loss_events] == [10.0]
+    # 100 min to process the 100-unit chunk: resource was busy the full time regardless of loss.
+    assert result["summary"]["resource_utilization"]["R1"] == 100 / 1440
+
+
+def test_input_qty_per_and_loss_rate_combine_with_recipe_selection_from_compiler():
+    # End-to-end sanity check that compiler.py's resolved_input_qty_per/loss_rate flow
+    # straight through to the simulator unchanged (both apply independently: consumption
+    # scaling on the way in, yield loss on the way out).
+    graph = {
+        "nodes": [_node("1")],
+        "transitions": [],
+        "resource_bindings": [_resource_binding("1", "R1", 1)],
+        "processing_time_plan": [_proc("1", std_time_per=1.0, input_qty_per=2.0, loss_rate=0.1)],
+        "queue_plan": [{"step_no": "1", "capacity": None}],
+    }
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 100)]
+
+    result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
+
+    # 100 input / 2 per output = 50 units processed, then 10% loss -> 45 exit.
+    assert result["summary"]["throughput_total"] == 45.0
 
 
 def test_shared_resource_serializes_contending_steps():

@@ -36,9 +36,11 @@ P2/P3 구현 당시 이미 문서에 남긴 것들 — 재확인만:
 
 **Phase A 구현**: 별도 `process_step_input` 테이블 대신 `ProcessStepTransition.consumption_ratio`로 흡수 — merge 타깃으로 들어오는 각 전이가 "1 결합 산출 단위당 몇 단위를 소비하는지"를 갖는다. 비대칭 소비는 특정 선행 엣지의 속성이라, 이미 그 엣지를 모델링하는 transition에 두는 게 더 자연스럽다는 판단.
 
-### 3-3. Recipe의 수율/로스 필드가 "죽은 데이터"
+### 3-3. Recipe의 수율/로스 필드가 "죽은 데이터" — **Phase C로 해결됨**
 
 `docs/schema/process-schema.json`의 레시피 템플릿에는 이미 `length_factor: {input_per_output, loss_rate}`가 정의돼 있고, `Recipe` 모델(`app/models/recipe.py:18`)에도 `length_factor` JSON 컬럼이 실제로 존재한다. **그런데 컴파일러(`compiler.py`)도 시뮬레이터(`simulation.py`)도 `Recipe`를 아예 참조하지 않는다.** P1에서 Recipe CRUD API는 만들었지만, ProcessStep과 실제로 연결(FK)되어 있지 않아서 "이 스텝은 이 레시피를 쓴다"는 관계 자체가 없다. 수율/로스율 데이터를 입력해도 시뮬레이션 결과에 전혀 반영되지 않는다.
+
+**Phase C 구현**: FK를 새로 추가하는 대신 `docs/schema/simpy-schema-compiler.json`의 `recipe_selection_rules`(정확 매치 → 그룹 매치 → 제품-무관 폴백)를 그대로 구현한 `compiler.py::_select_recipe(db, product_id, step)`로 컴파일 시점에 매칭한다. 매칭된 레시피의 `length_factor.input_per_output`은 스텝 자신의 `input_qty_per`가 비어 있을 때만 폴백으로 쓰이고(둘 다 이미 스키마에 있던 "같은 값의 대안 출처"이므로), `loss_rate`는 레시피에만 있는 값이라 무조건 그대로 노출된다. 두 값 모두 `processing_time_plan[].{recipe_id, input_qty_per, input_qty_per_source, loss_rate}`로 컴파일 결과에 노출되고, `simulation.py::step_process`가 이를 읽어 (1) non-merge 스텝의 입력 컨테이너 소비량을 `input_qty_per`만큼 스케일링(merge 스텝은 이미 3-2의 `consumption_ratio`가 같은 역할을 하므로 대상 아님), (2) 처리 후 산출량에 `qty * (1 - loss_rate)`를 적용해 하류로 넘기되, 자원 점유 시간(`proc_time`)은 로스 반영 전 `qty` 기준으로 유지(설비는 로스분까지 포함해 실제로 가공한 시간만큼 점유한다는 의미) — 하는 것으로 연결했다. `loss_rate > 0`인 사이클마다 `"loss"` 이벤트를 로그에 남겨 사후 관측 가능하게 했다.
 
 ### 3-4. setup_time이 "스텝당 평생 1회"로 고정
 
@@ -81,7 +83,7 @@ process_step_transition
 |---|---|---|---|
 | 3-1 Co-product 비율 분기 | 높음 | 질문에서 직접 제기한 케이스, 다품종/부산물 공정에서 흔함 | **완료 (Phase A)** |
 | 3-5 멀티 제품 자원 경합 | 높음 | "실제 공장 전체 용량"을 보려는 목적과 직결되는데 지금 구조로는 원천적으로 불가 | **완료 (Phase B)** |
-| 3-3 Recipe 수율/로스 미연결 | 중간 | 필드는 있으니 컴파일러/시뮬레이터 연결만 하면 됨 — 상대적으로 저비용 | 미착수 |
+| 3-3 Recipe 수율/로스 미연결 | 중간 | 필드는 있으니 컴파일러/시뮬레이터 연결만 하면 됨 — 상대적으로 저비용 | **완료 (Phase C)** |
 | 3-2 Merge 비대칭 소비(BOM) | 중간 | 3-1과 같은 근본 원인이라 함께 해결 가능 | **완료 (Phase A)** |
 | 3-4 setup_time 1회성 | 낮음~중간 | 다품종 라인이 아니면 영향 적음 | 미착수 |
 | 3-6 condition 미평가 | 낮음 | 정적 비율(3-1)로 상당수 케이스 대체 가능, 나머지는 별도 규칙 엔진 필요 | 미착수 |
@@ -163,7 +165,7 @@ class RoutingProductLink(TimestampMixin, Base):
 |---|---|---|---|
 | 3-1 Co-product 비율 분기(`process_step_output`) | 높음 | 1순위 — 이게 없으면 6장 전체가 무의미 | **완료** |
 | 3-5 멀티 제품 자원 경합(`RoutingProductLink`, 6-2/6-4/6-5/6-6) | 높음 | 2순위 — 3-1 위에 얹는 얇은 레이어라 3-1 직후 바로 착수 가능 | **완료** |
-| 3-3 Recipe 수율/로스 미연결 | 중간 | 그대로 | 미착수 |
+| 3-3 Recipe 수율/로스 미연결 | 중간 | 그대로 | **완료 (Phase C)** |
 | 3-2 Merge 비대칭 소비 | 중간 | 3-1과 같은 테이블(`process_step_input`)로 함께 처리 → 실제로는 `consumption_ratio`로 흡수 | **완료** |
 | 3-4 setup_time 1회성 | 낮음~중간 | 그대로 | 미착수 |
 | 3-6 condition 미평가 | 낮음 | 그대로 | 미착수 |

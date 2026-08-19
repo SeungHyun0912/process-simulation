@@ -137,6 +137,11 @@ def run_simulation(
         std_time_per = proc["std_time_per"]
         setup_remaining = proc.get("setup_time") or 0
         batch_size = node.get("batch_size") or 1
+        # input_qty_per (recipe length_factor fallback, see app/services/compiler.py
+        # _select_recipe) scales how much is consumed from a *single* input container per
+        # unit of output -- the non-merge analogue of a merge transition's consumption_ratio.
+        input_per_output = proc.get("input_qty_per") or 1.0
+        loss_rate = proc.get("loss_rate") or 0.0
         resource_key = resource_key_by_step.get(step_no)
         resource = resources.get(resource_key)
         step_containers = containers[step_no]
@@ -155,14 +160,14 @@ def run_simulation(
             else:
                 container = next(iter(step_containers.values()))
                 if is_batch:
-                    yield container.get(batch_size)
+                    yield container.get(batch_size * input_per_output)
                     qty = batch_size
                 else:
-                    yield container.get(1)
+                    yield container.get(input_per_output)
                     qty = 1
-                    extra = min(container.level, CHUNK_QTY_CAP - 1)
+                    extra = min(container.level / input_per_output, CHUNK_QTY_CAP - 1)
                     if extra > 0:
-                        yield container.get(extra)
+                        yield container.get(extra * input_per_output)
                         qty += extra
 
             proc_time = (qty / batch_size if is_batch else qty) * std_time_per + setup_remaining
@@ -187,7 +192,18 @@ def run_simulation(
                     "qty": qty,
                 }
             )
-            yield env.process(put_downstream(step_no, qty))
+
+            yield_qty = qty * (1 - loss_rate)
+            if loss_rate > 0:
+                event_log.append(
+                    {
+                        "sim_time": start_time,
+                        "event_type": "loss",
+                        "step_no": step_no,
+                        "qty": qty - yield_qty,
+                    }
+                )
+            yield env.process(put_downstream(step_no, yield_qty))
 
     def inbound_process(step_no: str, plan: dict):
         container = containers[step_no]["__inbound__"]

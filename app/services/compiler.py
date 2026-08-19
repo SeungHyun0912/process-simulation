@@ -13,6 +13,7 @@ from app.models.equipment import Equipment, EquipmentGroup
 from app.models.location import Location
 from app.models.process_routing import ProcessRouting, ProcessStep
 from app.models.product import Product
+from app.models.recipe import Recipe
 from app.models.runtime_profile import RuntimeProfile
 from app.services.routing_validation import _link_entry_terminal_steps, build_validation_report
 
@@ -41,6 +42,42 @@ def _runtime_echo(runtime_profile: RuntimeProfile | None) -> dict:
         **runtime_profile.execution_mode,
         **runtime_profile.scenario_toggles,
     }
+
+
+def _select_recipe(db: Session, product_id: str, step: ProcessStep) -> Recipe | None:
+    """Recipe selection per docs/schema/simpy-schema-compiler.json recipe_selection_rules:
+    exact product+process match, then group-level, then a product-agnostic process fallback.
+    Equipment-level exact matching isn't implemented -- Recipe has no equipment_id column yet.
+    Uses .first() rather than .one_or_none(): nothing enforces uniqueness on these columns.
+    """
+    if step.process_id:
+        recipe = (
+            db.query(Recipe)
+            .filter(Recipe.product_id == product_id, Recipe.process_id == step.process_id)
+            .order_by(Recipe.id)
+            .first()
+        )
+        if recipe:
+            return recipe
+    if step.process_group_id:
+        recipe = (
+            db.query(Recipe)
+            .filter(Recipe.product_id == product_id, Recipe.process_group_id == step.process_group_id)
+            .order_by(Recipe.id)
+            .first()
+        )
+        if recipe:
+            return recipe
+    if step.process_id:
+        recipe = (
+            db.query(Recipe)
+            .filter(Recipe.product_id.is_(None), Recipe.process_id == step.process_id)
+            .order_by(Recipe.id)
+            .first()
+        )
+        if recipe:
+            return recipe
+    return None
 
 
 def _transition_type(from_step: ProcessStep, to_step_no: str, steps_by_no: dict[str, ProcessStep]) -> str:
@@ -154,6 +191,12 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
                 }
             )
 
+        recipe = _select_recipe(db, routing.product_id, step)
+        length_factor = (recipe.length_factor or {}) if recipe else {}
+        resolved_input_qty_per = (
+            step.input_qty_per if step.input_qty_per is not None else length_factor.get("input_per_output")
+        )
+
         processing_time_plan.append(
             {
                 "step_no": step.step_no,
@@ -163,6 +206,10 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
                 "formula_id": "inverse_of_std_speed",
                 "time_unit": "min_per_batch" if step.production_type == "batch" else "min_per_unit",
                 "setup_time": step.setup_time or 0,
+                "recipe_id": recipe.recipe_id if recipe else None,
+                "input_qty_per": resolved_input_qty_per,
+                "input_qty_per_source": "step" if step.input_qty_per is not None else ("recipe" if recipe else None),
+                "loss_rate": length_factor.get("loss_rate") or 0.0,
             }
         )
 

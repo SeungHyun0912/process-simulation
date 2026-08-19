@@ -66,6 +66,102 @@ def test_compile_succeeds_and_produces_graph_object(client) -> None:
     assert graph["runtime_echo"]["duration_days"] == 30  # default runtime profile
 
 
+def test_compile_resolves_recipe_length_factor_into_processing_time_plan(client) -> None:
+    # docs/planning/07-schema-gap-review.md 3-3: Recipe.length_factor was defined but never
+    # read by the compiler. Exact-match recipe (product_id + process_id) should now supply
+    # input_qty_per/loss_rate when the step itself leaves input_qty_per unset.
+    _create_product(client)
+    client.post("/equipment-groups", json={"group_id": "GRP-DRAW", "capacity": 2})
+    client.post("/products/CV-3C-240/routings", json={})
+    client.post(
+        "/products/CV-3C-240/routings/v1/steps",
+        json={
+            "step_no": "1",
+            "process_id": "PROC-DRAW",
+            "std_speed": 80.0,
+            "equipment_group": "GRP-DRAW",
+            "schema_status": "official",
+            "outputs": [{"output_item_id": "OUT-1"}],
+        },
+    )
+    client.post(
+        "/recipes",
+        json={
+            "recipe_id": "REC-1",
+            "product_id": "CV-3C-240",
+            "process_id": "PROC-DRAW",
+            "length_factor": {"input_per_output": 1.05, "loss_rate": 0.02},
+        },
+    )
+
+    response = client.post("/compile-runs", json={"product_id": "CV-3C-240", "version": "v1"})
+    assert response.status_code == 201
+    plan = response.json()["compiled_graph_object"]["processing_time_plan"][0]
+    assert plan["recipe_id"] == "REC-1"
+    assert plan["input_qty_per"] == 1.05
+    assert plan["input_qty_per_source"] == "recipe"
+    assert plan["loss_rate"] == 0.02
+
+
+def test_compile_step_input_qty_per_overrides_recipe(client) -> None:
+    # The step's own input_qty_per (editable field) wins over the recipe's length_factor --
+    # the recipe value is only a fallback for steps that leave it unset.
+    _create_product(client)
+    client.post("/equipment-groups", json={"group_id": "GRP-DRAW", "capacity": 2})
+    client.post("/products/CV-3C-240/routings", json={})
+    client.post(
+        "/products/CV-3C-240/routings/v1/steps",
+        json={
+            "step_no": "1",
+            "process_id": "PROC-DRAW",
+            "input_qty_per": 3.0,
+            "std_speed": 80.0,
+            "equipment_group": "GRP-DRAW",
+            "schema_status": "official",
+            "outputs": [{"output_item_id": "OUT-1"}],
+        },
+    )
+    client.post(
+        "/recipes",
+        json={
+            "recipe_id": "REC-1",
+            "product_id": "CV-3C-240",
+            "process_id": "PROC-DRAW",
+            "length_factor": {"input_per_output": 1.05, "loss_rate": 0.02},
+        },
+    )
+
+    response = client.post("/compile-runs", json={"product_id": "CV-3C-240", "version": "v1"})
+    plan = response.json()["compiled_graph_object"]["processing_time_plan"][0]
+    assert plan["input_qty_per"] == 3.0
+    assert plan["input_qty_per_source"] == "step"
+    assert plan["loss_rate"] == 0.02  # loss_rate has no step-level equivalent, always from recipe
+
+
+def test_compile_with_no_matching_recipe_leaves_length_factor_unset(client) -> None:
+    _create_product(client)
+    client.post("/equipment-groups", json={"group_id": "GRP-DRAW", "capacity": 2})
+    client.post("/products/CV-3C-240/routings", json={})
+    client.post(
+        "/products/CV-3C-240/routings/v1/steps",
+        json={
+            "step_no": "1",
+            "process_id": "PROC-DRAW",
+            "std_speed": 80.0,
+            "equipment_group": "GRP-DRAW",
+            "schema_status": "official",
+            "outputs": [{"output_item_id": "OUT-1"}],
+        },
+    )
+
+    response = client.post("/compile-runs", json={"product_id": "CV-3C-240", "version": "v1"})
+    plan = response.json()["compiled_graph_object"]["processing_time_plan"][0]
+    assert plan["recipe_id"] is None
+    assert plan["input_qty_per"] is None
+    assert plan["input_qty_per_source"] is None
+    assert plan["loss_rate"] == 0.0
+
+
 def test_compile_with_named_runtime_profile_echoes_overrides(client) -> None:
     _create_product(client)
     client.post("/products/CV-3C-240/routings", json={})
