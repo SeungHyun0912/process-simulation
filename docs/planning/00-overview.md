@@ -72,6 +72,7 @@
 | P2 | Compiler 구현체 (`COMPILER_MAPPING_RULE` → 코드) | `ProcessRouting` → `compiled_graph_object` 변환기, `RuntimeProfile`/`CompileRun` | 완료 |
 | P3 | SimPy Runtime 실행기 + 결과 저장/조회 API | `05` 중 시뮬레이션 실행/결과 API | 완료 |
 | P4 | LLM 기반 업로드 파이프라인 | `03` 문서 구현 (Excel/JSON 업로드 → 초안 생성 → 검수 UI 연동) | 완료 (코드는 실제 Anthropic SDK로 구현, 라이브 호출은 이 환경에 API 키가 없어 미검증 — 아래 참고) |
+| P5 | 실데이터(DB/Excel) 기반 E2E 역검증 | `06` 문서 구현 (P2·P3 완료 후 착수 — 표준 스키마 변환 → 컴파일 → SimPy 실행까지 실데이터로 관통 검증) | 계획 수립됨, 구현 예정 |
 
 **P2 구현 메모**: 라우팅 레벨 검증(`/validate`, `/publish` — 끊긴 참조, 미해결 설비마스터)과 컴파일 전용 검증(`BLOCK_UNRESOLVED_PROCESSING_TIME` — std_speed 미해결)을 분리했다. 라우팅은 일부 스텝의 시간 정보가 아직 없어도 `published` 상태가 될 수 있지만, 컴파일은 그 상태에서 막힌다 (`compile_run.status = "blocked"`로 기록되고 `compiled_graph_object`는 `null`). 컴파일 실패는 `/publish`처럼 예외를 던지지 않고 `CompileRun` 행으로 남겨 감사 가능하게 했다.
 
@@ -89,16 +90,10 @@
 - 01번 문서에서 설계만 하고 실제로는 시딩하지 않았던 위치/이동경로 필드를 `docs/schema/process-schema-extensions.json`(신규)로 정식 등록했다 — 원본 `process-schema.json`은 건드리지 않고 레이어를 얹는 방식. `scripts/seed_meta_schema.py`가 이제 두 파일을 다 읽는다.
 - **이 환경에는 `ANTHROPIC_API_KEY`도 `ant` CLI도 없어 실제 LLM 호출은 라이브로 검증하지 못했다.** 코드는 Anthropic Python SDK를 정확한 스펙대로 사용했고(`claude-api` 스킬 기준), 테스트는 `extract_structured`를 모킹해서 파이프라인 로직(엔티티 판별 → 스키마 생성 → 승격)만 검증했다. 실제 호출 확인은 API 키를 받으면 그때 진행.
 - 업로드는 파일(`POST /ingestion/jobs/file`, csv/xlsx)과 JSON/배열 페이로드(`POST /ingestion/jobs/payload`)를 별도 엔드포인트로 분리했다 — 하나의 엔드포인트에서 멀티파트와 JSON 바디를 동시에 깔끔하게 받기 어려워서.
-| Phase | 범위 | 산출물 |
-|---|---|---|
-| P0 | Meta Schema 확장 설계 + RDB 스키마 설계 확정 | `01`, `04` 문서 확정, ERD |
-| P1 | Process 관리 CRUD API (수동 입력 기준) | `02`, `05` 중 CRUD 부분 구현 |
-| P2 | Compiler 구현체 (`COMPILER_MAPPING_RULE` → 코드) | `PROCESS_DEFINITION_INTENT` → `compiled_graph_object` 변환기 |
-| P3 | SimPy Runtime 실행기 + 결과 저장/조회 API | `05` 중 시뮬레이션 실행/결과 API |
-| P4 | LLM 기반 업로드 파이프라인 | `03` 문서 구현 (Excel/JSON 업로드 → 초안 생성 → 검수 UI 연동) |
-| P5 | 실데이터(DB/Excel) 기반 E2E 역검증 | `06` 문서 구현 (P2·P3 완료 후 착수 — 표준 스키마 변환 → 컴파일 → SimPy 실행까지 실데이터로 관통 검증) |
 
-P4를 마지막에 두는 이유: LLM 매핑의 목표 스키마(Meta Schema)와 저장 방식(RDB)이 먼저 안정화되어야 LLM 추출 결과의 정확도를 판단할 기준이 생기기 때문. 단, 문서화 자체는 지금 단계에서 함께 진행한다.
+P4를 P0~P3 이후에 두는 이유: LLM 매핑의 목표 스키마(Meta Schema)와 저장 방식(RDB)이 먼저 안정화되어야 LLM 추출 결과의 정확도를 판단할 기준이 생기기 때문. 단, 문서화 자체는 지금 단계에서 함께 진행한다.
+
+**P0~P4 완료 후 스키마 표현력 검토**: [`07-schema-gap-review.md`](./07-schema-gap-review.md)에서 "복잡한 공정(예: 하나의 투입 자재가 정해진 비율로 여러 산출물로 나뉘는 co-product 분기)을 지금 스키마로 표현할 수 있는가"를 감사했다. 결론은 불가 — `ProcessStep`/`ProcessStepTransition`이 "1스텝 = 입력 1개 = 출력 1개"를 전제로 설계돼 있어, 분기 비율 필드 자체가 없다. 그 외에도 Recipe의 수율/로스 필드가 컴파일러·시뮬레이터에 연결되지 않은 점, 여러 제품이 같은 설비를 공유할 때 자원 경합이 시뮬레이션 간에 반영되지 않는 점 등을 함께 정리해두었다.
 
 ## 5. 미해결 전제 (다음 대화에서 확인 필요)
 
