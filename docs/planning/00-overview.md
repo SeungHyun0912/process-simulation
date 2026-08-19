@@ -26,6 +26,7 @@
 | 4 | 공정 정보 / Meta Schema / 프로세스 관리를 RDB에 저장 | [`04-rdb-design.md`](./04-rdb-design.md) |
 | 5 | 사용자 기반으로 공정 정보/프로세스를 수정하는 API | [`05-api-design.md`](./05-api-design.md) (CRUD 섹션) |
 | 6 | 시뮬레이션 결과를 화면으로 전달하는 API | [`05-api-design.md`](./05-api-design.md) (Simulation 섹션) |
+| 7 | (파생) 실제 공정 정보(DB/Excel)를 표준 스키마로 변환해 컴파일/시뮬레이션까지 End-to-End로 역검증 | [`06-e2e-reverse-validation.md`](./06-e2e-reverse-validation.md) |
 
 ## 3. 전체 아키텍처 (레이어)
 
@@ -88,6 +89,14 @@
 - 01번 문서에서 설계만 하고 실제로는 시딩하지 않았던 위치/이동경로 필드를 `docs/schema/process-schema-extensions.json`(신규)로 정식 등록했다 — 원본 `process-schema.json`은 건드리지 않고 레이어를 얹는 방식. `scripts/seed_meta_schema.py`가 이제 두 파일을 다 읽는다.
 - **이 환경에는 `ANTHROPIC_API_KEY`도 `ant` CLI도 없어 실제 LLM 호출은 라이브로 검증하지 못했다.** 코드는 Anthropic Python SDK를 정확한 스펙대로 사용했고(`claude-api` 스킬 기준), 테스트는 `extract_structured`를 모킹해서 파이프라인 로직(엔티티 판별 → 스키마 생성 → 승격)만 검증했다. 실제 호출 확인은 API 키를 받으면 그때 진행.
 - 업로드는 파일(`POST /ingestion/jobs/file`, csv/xlsx)과 JSON/배열 페이로드(`POST /ingestion/jobs/payload`)를 별도 엔드포인트로 분리했다 — 하나의 엔드포인트에서 멀티파트와 JSON 바디를 동시에 깔끔하게 받기 어려워서.
+| Phase | 범위 | 산출물 |
+|---|---|---|
+| P0 | Meta Schema 확장 설계 + RDB 스키마 설계 확정 | `01`, `04` 문서 확정, ERD |
+| P1 | Process 관리 CRUD API (수동 입력 기준) | `02`, `05` 중 CRUD 부분 구현 |
+| P2 | Compiler 구현체 (`COMPILER_MAPPING_RULE` → 코드) | `PROCESS_DEFINITION_INTENT` → `compiled_graph_object` 변환기 |
+| P3 | SimPy Runtime 실행기 + 결과 저장/조회 API | `05` 중 시뮬레이션 실행/결과 API |
+| P4 | LLM 기반 업로드 파이프라인 | `03` 문서 구현 (Excel/JSON 업로드 → 초안 생성 → 검수 UI 연동) |
+| P5 | 실데이터(DB/Excel) 기반 E2E 역검증 | `06` 문서 구현 (P2·P3 완료 후 착수 — 표준 스키마 변환 → 컴파일 → SimPy 실행까지 실데이터로 관통 검증) |
 
 P4를 마지막에 두는 이유: LLM 매핑의 목표 스키마(Meta Schema)와 저장 방식(RDB)이 먼저 안정화되어야 LLM 추출 결과의 정확도를 판단할 기준이 생기기 때문. 단, 문서화 자체는 지금 단계에서 함께 진행한다.
 
