@@ -93,7 +93,9 @@
 
 P4를 P0~P3 이후에 두는 이유: LLM 매핑의 목표 스키마(Meta Schema)와 저장 방식(RDB)이 먼저 안정화되어야 LLM 추출 결과의 정확도를 판단할 기준이 생기기 때문. 단, 문서화 자체는 지금 단계에서 함께 진행한다.
 
-**P0~P4 완료 후 스키마 표현력 검토**: [`07-schema-gap-review.md`](./07-schema-gap-review.md)에서 "복잡한 공정(예: 하나의 투입 자재가 정해진 비율로 여러 산출물로 나뉘는 co-product 분기)을 지금 스키마로 표현할 수 있는가"를 감사했다. 결론은 불가 — `ProcessStep`/`ProcessStepTransition`이 "1스텝 = 입력 1개 = 출력 1개"를 전제로 설계돼 있어, 분기 비율 필드 자체가 없다. 그 외에도 Recipe의 수율/로스 필드가 컴파일러·시뮬레이터에 연결되지 않은 점, 여러 제품이 같은 설비를 공유할 때 자원 경합이 시뮬레이션 간에 반영되지 않는 점 등을 함께 정리해두었다.
+**P0~P4 완료 후 스키마 표현력 검토**: [`07-schema-gap-review.md`](./07-schema-gap-review.md)에서 "복잡한 공정(예: 하나의 투입 자재가 정해진 비율로 여러 산출물로 나뉘는 co-product 분기)을 지금 스키마로 표현할 수 있는가"를 감사했다. 당초 결론은 불가 — `ProcessStep`/`ProcessStepTransition`이 "1스텝 = 입력 1개 = 출력 1개"를 전제로 설계돼 있어, 분기 비율 필드 자체가 없었다. 그 외에도 Recipe의 수율/로스 필드가 컴파일러·시뮬레이터에 연결되지 않은 점, 여러 제품이 같은 설비를 공유할 때 자원 경합이 시뮬레이션 간에 반영되지 않는 점 등을 함께 정리해두었다.
+
+**Phase A (co-product 비율 분기 + 비대칭 BOM 합류) 구현 완료**: `ProcessStepOutput` 테이블로 스텝의 산출물을 1:N으로 분리(`output_item_id`/`output_ratio`), `ProcessStepTransition`에 `output_item_id`(어떤 산출물을 나르는 전이인지)/`consumption_ratio`(merge 스텝의 비대칭 소비 비율)를 추가했다. 검증 게이트 3종(`BLOCK_STEP_HAS_NO_OUTPUT`/`BLOCK_TRANSITION_OUTPUT_ITEM_UNKNOWN`/`WARN_OUTPUT_RATIO_SUM`) 추가. `ProcessStep.output_item_id`는 하위호환 shim 없이 제거 — 이 프로젝트가 아직 프로덕션 데이터 없는 개발 단계라 깔끔한 컷을 택했다. "A설비에 1번 자재 투입 시 1-1/1-2가 6:4로 나온다" 예시를 API 전체 스택(DB→컴파일러→시뮬레이터)으로 재현해 정확히 60/40 분배되는 것을 확인했다. 다음은 Phase B(`RoutingProductLink`, 멀티 제품 공유 네트워크) — `07-schema-gap-review.md` 6장 참고.
 
 ## 5. 미해결 전제 (다음 대화에서 확인 필요)
 

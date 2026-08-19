@@ -24,6 +24,26 @@ def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
         )
 
     for step in steps:
+        if not step.outputs:
+            blocking_errors.append(
+                {
+                    "rule_id": "BLOCK_STEP_HAS_NO_OUTPUT",
+                    "path": f"steps[{step.step_no}].outputs",
+                    "message": f"step {step.step_no} has no declared output items",
+                }
+            )
+        else:
+            output_item_ids = {o.output_item_id for o in step.outputs}
+            ratio_sum = sum(o.output_ratio for o in step.outputs)
+            if abs(ratio_sum - 1.0) > 1e-6:
+                warnings.append(
+                    {
+                        "rule_id": "WARN_OUTPUT_RATIO_SUM",
+                        "path": f"steps[{step.step_no}].outputs",
+                        "message": f"step {step.step_no} output_ratio sums to {ratio_sum}, not 1.0",
+                    }
+                )
+
         for transition in step.next_steps:
             if transition.to_step_no not in step_nos:
                 blocking_errors.append(
@@ -36,6 +56,30 @@ def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
                         ),
                     }
                 )
+
+            if step.outputs:
+                if transition.output_item_id is None and len(step.outputs) > 1:
+                    blocking_errors.append(
+                        {
+                            "rule_id": "BLOCK_TRANSITION_OUTPUT_ITEM_UNKNOWN",
+                            "path": f"steps[{step.step_no}].next_steps",
+                            "message": (
+                                f"step {step.step_no} has {len(step.outputs)} outputs; the transition "
+                                f"to {transition.to_step_no} must specify which output_item_id it carries"
+                            ),
+                        }
+                    )
+                elif transition.output_item_id is not None and transition.output_item_id not in output_item_ids:
+                    blocking_errors.append(
+                        {
+                            "rule_id": "BLOCK_TRANSITION_OUTPUT_ITEM_UNKNOWN",
+                            "path": f"steps[{step.step_no}].next_steps",
+                            "message": (
+                                f"transition {step.step_no} -> {transition.to_step_no} references output "
+                                f"item {transition.output_item_id!r}, which step {step.step_no} doesn't produce"
+                            ),
+                        }
+                    )
 
         if step.equipment_group:
             resolved = (

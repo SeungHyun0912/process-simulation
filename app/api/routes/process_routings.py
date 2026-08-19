@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.process_routing import ProcessRouting, ProcessStep, ProcessStepTransition
+from app.models.process_routing import (
+    ProcessRouting,
+    ProcessStep,
+    ProcessStepOutput,
+    ProcessStepTransition,
+)
 from app.models.product import Product
 from app.schemas.process_routing import (
     ProcessRoutingCreate,
@@ -55,11 +60,23 @@ def _require_editable(routing: ProcessRouting) -> None:
 
 def _apply_step_fields(step: ProcessStep, data: dict) -> None:
     next_steps_payload = data.pop("next_steps", None)
+    outputs_payload = data.pop("outputs", None)
     for field, value in data.items():
         setattr(step, field, value)
 
     # FM_ROUTING_STD_TIME_PER.editable=false: always recomputed from std_speed, never taken from input.
     step.std_time_per = round(1 / step.std_speed, 6) if step.std_speed else None
+
+    if outputs_payload is not None:
+        step.outputs.clear()
+        for output in outputs_payload:
+            step.outputs.append(
+                ProcessStepOutput(
+                    output_item_id=output["output_item_id"],
+                    output_ratio=output["output_ratio"],
+                    unit=output["unit"],
+                )
+            )
 
     if next_steps_payload is not None:
         step.next_steps.clear()
@@ -70,6 +87,8 @@ def _apply_step_fields(step: ProcessStep, data: dict) -> None:
                     to_step_no=transition["step_no"],
                     condition=condition,
                     interpreted_condition="always_true" if not condition else "application_defined_expression",
+                    output_item_id=transition["output_item_id"],
+                    consumption_ratio=transition["consumption_ratio"],
                 )
             )
 
@@ -194,7 +213,6 @@ def clone_routing(product_id: str, version: str, db: Session = Depends(get_db)) 
             process_group_id=step.process_group_id,
             process_name=step.process_name,
             input_item_id=step.input_item_id,
-            output_item_id=step.output_item_id,
             input_qty_per=step.input_qty_per,
             equipment_group=step.equipment_group,
             std_speed=step.std_speed,
@@ -212,12 +230,22 @@ def clone_routing(product_id: str, version: str, db: Session = Depends(get_db)) 
             process_specific=step.process_specific,
             schema_status=step.schema_status,
         )
+        for output in step.outputs:
+            new_step.outputs.append(
+                ProcessStepOutput(
+                    output_item_id=output.output_item_id,
+                    output_ratio=output.output_ratio,
+                    unit=output.unit,
+                )
+            )
         for transition in step.next_steps:
             new_step.next_steps.append(
                 ProcessStepTransition(
                     to_step_no=transition.to_step_no,
                     condition=transition.condition,
                     interpreted_condition=transition.interpreted_condition,
+                    output_item_id=transition.output_item_id,
+                    consumption_ratio=transition.consumption_ratio,
                 )
             )
         db.add(new_step)

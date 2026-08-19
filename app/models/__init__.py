@@ -11,6 +11,7 @@ from app.models.meta_schema import MetaCommonField, MetaFieldMapping  # noqa: F4
 from app.models.process_routing import (  # noqa: F401
     ProcessRouting,
     ProcessStep,
+    ProcessStepOutput,
     ProcessStepTransition,
 )
 from app.models.product import Product  # noqa: F401

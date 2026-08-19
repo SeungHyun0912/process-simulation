@@ -3,9 +3,25 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 
+class StepOutputIn(BaseModel):
+    output_item_id: str
+    output_ratio: float = 1.0
+    unit: str | None = None
+
+
+class StepOutputRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    output_item_id: str
+    output_ratio: float
+    unit: str | None
+
+
 class StepTransitionIn(BaseModel):
     step_no: str
     condition: str = ""
+    output_item_id: str | None = None
+    consumption_ratio: float = 1.0
 
 
 class StepTransitionRead(BaseModel):
@@ -14,6 +30,8 @@ class StepTransitionRead(BaseModel):
     to_step_no: str
     condition: str
     interpreted_condition: str
+    output_item_id: str | None
+    consumption_ratio: float
 
 
 class ProcessStepCreate(BaseModel):
@@ -22,7 +40,6 @@ class ProcessStepCreate(BaseModel):
     process_group_id: str | None = None
     process_name: str | None = None
     input_item_id: str | None = None
-    output_item_id: str | None = None
     input_qty_per: float | None = None
     equipment_group: str | None = None
     std_speed: float | None = None
@@ -39,6 +56,7 @@ class ProcessStepCreate(BaseModel):
     batch_unit: str | None = None
     process_specific: dict | None = None
     schema_status: str = "provisional"
+    outputs: list[StepOutputIn] = []
     next_steps: list[StepTransitionIn] = []
 
 
@@ -47,7 +65,6 @@ class ProcessStepUpdate(BaseModel):
     process_group_id: str | None = None
     process_name: str | None = None
     input_item_id: str | None = None
-    output_item_id: str | None = None
     input_qty_per: float | None = None
     equipment_group: str | None = None
     std_speed: float | None = None
@@ -63,6 +80,7 @@ class ProcessStepUpdate(BaseModel):
     batch_unit: str | None = None
     process_specific: dict | None = None
     schema_status: str | None = None
+    outputs: list[StepOutputIn] | None = None
     next_steps: list[StepTransitionIn] | None = None
 
 
@@ -74,7 +92,6 @@ class ProcessStepRead(BaseModel):
     process_group_id: str | None
     process_name: str | None
     input_item_id: str | None
-    output_item_id: str | None
     input_qty_per: float | None
     equipment_group: str | None
     std_speed: float | None
@@ -92,6 +109,7 @@ class ProcessStepRead(BaseModel):
     process_specific: dict | None
     schema_status: str
     reference_status: dict | None
+    outputs: list[StepOutputRead]
     next_steps: list[StepTransitionRead]
 
 

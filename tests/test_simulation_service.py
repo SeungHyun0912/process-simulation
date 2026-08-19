@@ -4,7 +4,7 @@ TIME_CONTROL_1_DAY = {"duration_days": 1}  # 1440 minutes
 OUTPUT_CONTROL = {"collect_wip_snapshot": True, "snapshot_interval": 60, "snapshot_interval_unit": "minute"}
 
 
-def _node(step_no, flow_type="sequential", production_type="continuous", batch_size=None, batch_unit=None):
+def _node(step_no, flow_type="sequential", production_type="continuous", batch_size=None, batch_unit=None, outputs=None):
     return {
         "step_no": step_no,
         "flow_type": flow_type,
@@ -12,7 +12,7 @@ def _node(step_no, flow_type="sequential", production_type="continuous", batch_s
         "batch_size": batch_size,
         "batch_unit": batch_unit,
         "input_item_id": f"ITEM-IN-{step_no}",
-        "output_item_id": f"ITEM-OUT-{step_no}",
+        "outputs": outputs if outputs is not None else [{"output_item_id": f"ITEM-OUT-{step_no}", "output_ratio": 1.0, "unit": None}],
         "input_location_id": None,
     }
 
@@ -23,6 +23,26 @@ def _proc(step_no, std_time_per, setup_time=0):
 
 def _resource_binding(step_no, resource_key, capacity):
     return {"step_no": step_no, "resource_key": resource_key, "capacity": capacity}
+
+
+def _transition(from_step_no, to_step_no, output_item_id=None, consumption_ratio=1.0):
+    return {
+        "from_step_no": from_step_no,
+        "to_step_no": to_step_no,
+        "output_item_id": output_item_id,
+        "consumption_ratio": consumption_ratio,
+    }
+
+
+def _inbound_plan(plan_id, item_id, qty):
+    return {
+        "plan_id": plan_id,
+        "item_id": item_id,
+        "location_id": None,
+        "inbound_qty": qty,
+        "interval_value": 1,
+        "interval_unit": "day",
+    }
 
 
 def test_single_sequential_step_processes_in_bounded_chunks():
@@ -37,16 +57,7 @@ def test_single_sequential_step_processes_in_bounded_chunks():
         "processing_time_plan": [_proc("1", std_time_per=1.0)],
         "queue_plan": [{"step_no": "1", "capacity": None}],
     }
-    inbound_plans = [
-        {
-            "plan_id": "PLAN-1",
-            "item_id": "ITEM-IN-1",
-            "location_id": None,
-            "inbound_qty": 100_000,
-            "interval_value": 1,
-            "interval_unit": "day",
-        }
-    ]
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 100_000)]
 
     result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
 
@@ -81,16 +92,7 @@ def test_material_inbound_override_changes_supply():
         "processing_time_plan": [_proc("1", std_time_per=1.0)],
         "queue_plan": [{"step_no": "1", "capacity": None}],
     }
-    inbound_plans = [
-        {
-            "plan_id": "PLAN-1",
-            "item_id": "ITEM-IN-1",
-            "location_id": None,
-            "inbound_qty": 100_000,
-            "interval_value": 1,
-            "interval_unit": "day",
-        }
-    ]
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 100_000)]
 
     # Cap supply to 300 (less than one full 500-unit chunk): only one cycle of 300 completes.
     result = run_simulation(
@@ -108,8 +110,8 @@ def test_parallel_split_divides_output_equally():
             _node("3", flow_type="parallel"),
         ],
         "transitions": [
-            {"from_step_no": "1", "to_step_no": "2"},
-            {"from_step_no": "1", "to_step_no": "3"},
+            _transition("1", "2"),
+            _transition("1", "3"),
         ],
         "resource_bindings": [
             _resource_binding("1", "R1", 1),
@@ -127,25 +129,60 @@ def test_parallel_split_divides_output_equally():
             {"step_no": "3", "capacity": None},
         ],
     }
-    inbound_plans = [
-        {
-            "plan_id": "PLAN-1",
-            "item_id": "ITEM-IN-1",
-            "location_id": None,
-            "inbound_qty": 100,
-            "interval_value": 1,
-            "interval_unit": "day",
-        }
-    ]
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 100)]
 
     result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
 
-    # Step 1 processes 100 units (all available on the one inbound delivery), splits 50/50.
+    # Step 1 processes 100 units (all available on the one inbound delivery), splits 50/50
+    # (its single output item feeds two transitions, divided equally between them).
     exits_by_step = {}
     for e in result["event_log"]:
         if e["event_type"] == "exit":
             exits_by_step[e["step_no"]] = exits_by_step.get(e["step_no"], 0) + e["qty"]
     assert exits_by_step == {"2": 50.0, "3": 50.0}
+
+
+def test_coproduct_split_at_fixed_ratio():
+    # The concrete case from docs/planning/07-schema-gap-review.md: step 1 splits its single
+    # input into two named co-products (1-1 at 60%, 1-2 at 40%), routed to different next steps.
+    graph = {
+        "nodes": [
+            _node("1", outputs=[
+                {"output_item_id": "ITEM-1-1", "output_ratio": 0.6, "unit": "kg"},
+                {"output_item_id": "ITEM-1-2", "output_ratio": 0.4, "unit": "kg"},
+            ]),
+            _node("2"),
+            _node("3"),
+        ],
+        "transitions": [
+            _transition("1", "2", output_item_id="ITEM-1-1"),
+            _transition("1", "3", output_item_id="ITEM-1-2"),
+        ],
+        "resource_bindings": [
+            _resource_binding("1", "R1", 1),
+            _resource_binding("2", "R2", 1),
+            _resource_binding("3", "R3", 1),
+        ],
+        "processing_time_plan": [
+            _proc("1", std_time_per=1.0),
+            _proc("2", std_time_per=1.0),
+            _proc("3", std_time_per=1.0),
+        ],
+        "queue_plan": [
+            {"step_no": "1", "capacity": None},
+            {"step_no": "2", "capacity": None},
+            {"step_no": "3", "capacity": None},
+        ],
+    }
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 100)]
+
+    result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
+
+    exits_by_step = {}
+    for e in result["event_log"]:
+        if e["event_type"] == "exit":
+            exits_by_step[e["step_no"]] = exits_by_step.get(e["step_no"], 0) + e["qty"]
+    assert exits_by_step == {"2": 60.0, "3": 40.0}
 
 
 def test_merge_step_consumes_one_to_one_from_each_predecessor():
@@ -156,8 +193,8 @@ def test_merge_step_consumes_one_to_one_from_each_predecessor():
             _node("3", flow_type="merge"),
         ],
         "transitions": [
-            {"from_step_no": "1", "to_step_no": "3"},
-            {"from_step_no": "2", "to_step_no": "3"},
+            _transition("1", "3"),
+            _transition("2", "3"),
         ],
         "resource_bindings": [
             _resource_binding("1", "R1", 1),
@@ -176,28 +213,77 @@ def test_merge_step_consumes_one_to_one_from_each_predecessor():
         ],
     }
     inbound_plans = [
-        {
-            "plan_id": "PLAN-1",
-            "item_id": "ITEM-IN-1",
-            "location_id": None,
-            "inbound_qty": 10,
-            "interval_value": 1,
-            "interval_unit": "day",
-        },
-        {
-            "plan_id": "PLAN-2",
-            "item_id": "ITEM-IN-2",
-            "location_id": None,
-            "inbound_qty": 10,
-            "interval_value": 1,
-            "interval_unit": "day",
-        },
+        _inbound_plan("PLAN-1", "ITEM-IN-1", 10),
+        _inbound_plan("PLAN-2", "ITEM-IN-2", 10),
     ]
 
     result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
 
     exit_qty = sum(e["qty"] for e in result["event_log"] if e["event_type"] == "exit")
     assert exit_qty == 10  # 10 units from each branch, combined 1:1 into 10 merged units
+
+
+def test_merge_step_consumes_asymmetric_bom_ratio():
+    # 2:1 BOM: merge step 3 needs 2 units from step 1 for every 1 unit from step 2.
+    # Step 1's supply (14) is the binding constraint at that ratio: 14/2 = 7 cycles,
+    # vs. step 2's 100/1 = 100 cycles. A naive 1:1 assumption would predict min(14, 100)
+    # = 14 -- getting 7 instead proves the 2:1 ratio is actually being applied.
+    graph = {
+        "nodes": [
+            _node("1"),
+            _node("2"),
+            _node("3", flow_type="merge"),
+        ],
+        "transitions": [
+            _transition("1", "3", consumption_ratio=2),
+            _transition("2", "3", consumption_ratio=1),
+        ],
+        "resource_bindings": [
+            _resource_binding("1", "R1", 1),
+            _resource_binding("2", "R2", 1),
+            _resource_binding("3", "R3", 1),
+        ],
+        "processing_time_plan": [
+            _proc("1", std_time_per=1.0),
+            _proc("2", std_time_per=1.0),
+            _proc("3", std_time_per=1.0),
+        ],
+        "queue_plan": [
+            {"step_no": "1", "capacity": None},
+            {"step_no": "2", "capacity": None},
+            {"step_no": "3", "capacity": None},
+        ],
+    }
+    inbound_plans = [
+        _inbound_plan("PLAN-1", "ITEM-IN-1", 14),
+        _inbound_plan("PLAN-2", "ITEM-IN-2", 100),
+    ]
+
+    result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
+
+    exit_qty = sum(e["qty"] for e in result["event_log"] if e["event_type"] == "exit")
+    assert exit_qty == 7
+
+
+def test_terminal_step_with_two_outputs_logs_two_exit_events():
+    graph = {
+        "nodes": [
+            _node("1", outputs=[
+                {"output_item_id": "MAIN", "output_ratio": 0.9, "unit": None},
+                {"output_item_id": "SCRAP", "output_ratio": 0.1, "unit": None},
+            ]),
+        ],
+        "transitions": [],
+        "resource_bindings": [_resource_binding("1", "R1", 1)],
+        "processing_time_plan": [_proc("1", std_time_per=1.0)],
+        "queue_plan": [{"step_no": "1", "capacity": None}],
+    }
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 100)]
+
+    result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
+
+    exits = {e["item_id"]: e["qty"] for e in result["event_log"] if e["event_type"] == "exit"}
+    assert exits == {"MAIN": 90.0, "SCRAP": 10.0}
 
 
 def test_shared_resource_serializes_contending_steps():
@@ -220,22 +306,8 @@ def test_shared_resource_serializes_contending_steps():
         ],
     }
     inbound_plans = [
-        {
-            "plan_id": "PLAN-1",
-            "item_id": "ITEM-IN-1",
-            "location_id": None,
-            "inbound_qty": 100_000,
-            "interval_value": 1,
-            "interval_unit": "day",
-        },
-        {
-            "plan_id": "PLAN-2",
-            "item_id": "ITEM-IN-2",
-            "location_id": None,
-            "inbound_qty": 100_000,
-            "interval_value": 1,
-            "interval_unit": "day",
-        },
+        _inbound_plan("PLAN-1", "ITEM-IN-1", 100_000),
+        _inbound_plan("PLAN-2", "ITEM-IN-2", 100_000),
     ]
 
     result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)

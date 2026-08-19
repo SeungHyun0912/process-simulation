@@ -39,7 +39,6 @@ class ProcessStep(TimestampMixin, Base):
     process_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     process_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     input_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    output_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     input_qty_per: Mapped[float | None] = mapped_column(Float, nullable=True)
     equipment_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
     std_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -62,6 +61,29 @@ class ProcessStep(TimestampMixin, Base):
     next_steps: Mapped[list["ProcessStepTransition"]] = relationship(
         back_populates="from_step", cascade="all, delete-orphan"
     )
+    outputs: Mapped[list["ProcessStepOutput"]] = relationship(
+        back_populates="step", cascade="all, delete-orphan"
+    )
+
+
+class ProcessStepOutput(Base):
+    """A named co-product a step can yield, and its ratio relative to qty processed.
+
+    A step with a single output still gets exactly one row here (output_ratio=1.0) --
+    this replaces the old scalar ProcessStep.output_item_id so no special-casing is
+    needed for single- vs. multi-output steps (docs/planning/07-schema-gap-review.md).
+    """
+
+    __tablename__ = "process_step_output"
+    __table_args__ = (UniqueConstraint("step_id", "output_item_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    step_id: Mapped[int] = mapped_column(ForeignKey("process_step.id", ondelete="CASCADE"), index=True)
+    output_item_id: Mapped[str] = mapped_column(String(64))
+    output_ratio: Mapped[float] = mapped_column(Float, default=1.0)
+    unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    step: Mapped["ProcessStep"] = relationship(back_populates="outputs")
 
 
 class ProcessStepTransition(Base):
@@ -74,5 +96,7 @@ class ProcessStepTransition(Base):
     to_step_no: Mapped[str] = mapped_column(String(32))
     condition: Mapped[str] = mapped_column(String(256), default="")
     interpreted_condition: Mapped[str] = mapped_column(String(32), default="always_true")
+    output_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    consumption_ratio: Mapped[float] = mapped_column(Float, default=1.0)
 
     from_step: Mapped["ProcessStep"] = relationship(back_populates="next_steps")

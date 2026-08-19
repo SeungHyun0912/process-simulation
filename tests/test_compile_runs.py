@@ -39,6 +39,7 @@ def test_compile_succeeds_and_produces_graph_object(client) -> None:
             "equipment_group": "GRP-DRAW",
             "input_location_id": "WH-RAW",
             "schema_status": "official",
+            "outputs": [{"output_item_id": "OUT-1"}],
         },
     )
 
@@ -69,7 +70,12 @@ def test_compile_with_named_runtime_profile_echoes_overrides(client) -> None:
     client.post("/products/CV-3C-240/routings", json={})
     client.post(
         "/products/CV-3C-240/routings/v1/steps",
-        json={"step_no": "1", "std_speed": 80.0, "schema_status": "official"},
+        json={
+            "step_no": "1",
+            "std_speed": 80.0,
+            "schema_status": "official",
+            "outputs": [{"output_item_id": "OUT-1"}],
+        },
     )
     client.post(
         "/runtime-profiles",
@@ -109,6 +115,7 @@ def test_compile_marks_parallel_split_and_merge_transitions(client) -> None:
             "step_no": "1",
             "std_speed": 80.0,
             "schema_status": "official",
+            "outputs": [{"output_item_id": "OUT-1"}],
             "next_steps": [{"step_no": "2"}, {"step_no": "3"}],
         },
     )
@@ -120,6 +127,7 @@ def test_compile_marks_parallel_split_and_merge_transitions(client) -> None:
             "flow_type": "parallel",
             "parallel_group_id": "PG-1",
             "schema_status": "official",
+            "outputs": [{"output_item_id": "OUT-2"}],
             "next_steps": [{"step_no": "4"}],
         },
     )
@@ -131,6 +139,7 @@ def test_compile_marks_parallel_split_and_merge_transitions(client) -> None:
             "flow_type": "parallel",
             "parallel_group_id": "PG-1",
             "schema_status": "official",
+            "outputs": [{"output_item_id": "OUT-3"}],
             "next_steps": [{"step_no": "4"}],
         },
     )
@@ -142,6 +151,7 @@ def test_compile_marks_parallel_split_and_merge_transitions(client) -> None:
             "flow_type": "merge",
             "join_condition": "all_required_inputs",
             "schema_status": "official",
+            "outputs": [{"output_item_id": "OUT-4"}],
         },
     )
 

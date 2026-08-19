@@ -17,7 +17,7 @@ def _compiled_routing(client) -> int:
         json={
             "step_no": "1",
             "input_item_id": "ROD-CU-8MM",
-            "output_item_id": "WIRE-CU-DRAWN",
+            "outputs": [{"output_item_id": "WIRE-CU-DRAWN"}],
             "input_location_id": "WH-RAW",
             "std_speed": 60.0,
             "equipment_group": "GRP-DRAW",

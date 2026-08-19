@@ -97,7 +97,10 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
                 "process_group_id": step.process_group_id,
                 "process_name": step.process_name,
                 "input_item_id": step.input_item_id,
-                "output_item_id": step.output_item_id,
+                "outputs": [
+                    {"output_item_id": o.output_item_id, "output_ratio": o.output_ratio, "unit": o.unit}
+                    for o in step.outputs
+                ],
                 "production_type": step.production_type,
                 "flow_type": step.flow_type,
                 "parallel_group_id": step.parallel_group_id or None,
@@ -128,6 +131,8 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
                     "condition": transition.condition,
                     "interpreted_condition": transition.interpreted_condition,
                     "parallel_group_id": step.parallel_group_id or None,
+                    "output_item_id": transition.output_item_id,
+                    "consumption_ratio": transition.consumption_ratio,
                 }
             )
 

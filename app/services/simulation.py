@@ -8,10 +8,12 @@ roadmap; extend these as real usage demands it):
   COMPILER_MAPPING_RULE.transition_compilation_rules: a non-empty condition is
   documented as "application_defined_expression", i.e. undefined without a rule
   engine -- out of scope here).
-- A step with N successors via a parallel-split divides its output qty equally
-  across them. A merge step consumes exactly 1 unit (or 1 batch) from EACH of
-  its predecessor containers per cycle -- no defined split-ratio field exists
-  yet, so equal division is the documented v1 assumption.
+- A step can declare multiple named outputs with fixed ratios (ProcessStepOutput)
+  -- e.g. one input yielding two co-products at a 6:4 split (docs/planning/
+  07-schema-gap-review.md). Transitions carrying the same output_item_id from a
+  step still divide that item's qty equally among them. A merge step's incoming
+  transitions can each carry a different consumption_ratio (asymmetric BOM,
+  e.g. 2 units of A per 1 unit of B) instead of always consuming 1:1.
 - Continuous steps process in chunks of up to CHUNK_QTY_CAP units per
   resource-hold cycle (not unit-by-unit) so a 30-day run stays a few hundred
   events per step instead of millions. Batch steps process exactly one batch
@@ -68,10 +70,12 @@ def run_simulation(
     }
 
     predecessors: dict[str, list[str]] = {step_no: [] for step_no in nodes}
-    successors: dict[str, list[str]] = {step_no: [] for step_no in nodes}
+    transitions_by_from: dict[str, list[dict]] = {step_no: [] for step_no in nodes}
+    transitions_by_to: dict[str, list[dict]] = {step_no: [] for step_no in nodes}
     for t in compiled_graph_object["transitions"]:
         predecessors[t["to_step_no"]].append(t["from_step_no"])
-        successors[t["from_step_no"]].append(t["to_step_no"])
+        transitions_by_from[t["from_step_no"]].append(t)
+        transitions_by_to[t["to_step_no"]].append(t)
 
     end_time = _to_minutes(time_control.get("duration_days", 30), "day")
     inbound_overrides = inbound_overrides or {}
@@ -94,15 +98,36 @@ def run_simulation(
     busy_time_by_resource = {key: 0.0 for key in resources}
 
     def put_downstream(from_step_no: str, qty: float):
-        succs = successors[from_step_no]
-        if not succs:
-            event_log.append(
-                {"sim_time": env.now, "event_type": "exit", "step_no": from_step_no, "qty": qty}
-            )
-            return
-        share = qty / len(succs)
-        for succ in succs:
-            yield containers[succ][from_step_no].put(share)
+        """Split qty across this step's declared outputs (by output_ratio), then across whichever
+        transitions carry each output item (equally, among transitions sharing that output_item_id).
+        An output item with no matching outgoing transition exits the network (byproduct/finished good).
+        """
+        outgoing = transitions_by_from[from_step_no]
+        outputs = nodes[from_step_no]["outputs"]
+        single_output = len(outputs) == 1
+
+        for output in outputs:
+            item_qty = qty * output["output_ratio"]
+            matching = [
+                t
+                for t in outgoing
+                if t["output_item_id"] == output["output_item_id"]
+                or (t["output_item_id"] is None and single_output)
+            ]
+            if not matching:
+                event_log.append(
+                    {
+                        "sim_time": env.now,
+                        "event_type": "exit",
+                        "step_no": from_step_no,
+                        "item_id": output["output_item_id"],
+                        "qty": item_qty,
+                    }
+                )
+                continue
+            share = item_qty / len(matching)
+            for t in matching:
+                yield containers[t["to_step_no"]][from_step_no].put(share)
 
     def step_process(step_no: str):
         node = nodes[step_no]
@@ -115,13 +140,18 @@ def run_simulation(
         resource_key = resource_key_by_step.get(step_no)
         resource = resources.get(resource_key)
         step_containers = containers[step_no]
+        consumption_ratio_by_pred = {t["from_step_no"]: t["consumption_ratio"] for t in transitions_by_to[step_no]}
 
         while True:
             if is_merge:
-                unit = batch_size if is_batch else 1
-                for container in step_containers.values():
-                    yield container.get(unit)
-                qty = unit
+                # Production and consumption are decoupled: this cycle always *produces* one
+                # unit/batch, but each predecessor may be consumed at a different ratio (e.g. a
+                # 2:1 BOM) via the incoming transition's consumption_ratio.
+                output_qty = batch_size if is_batch else 1
+                for pred_step_no, container in step_containers.items():
+                    ratio = consumption_ratio_by_pred.get(pred_step_no, 1.0)
+                    yield container.get(output_qty * ratio)
+                qty = output_qty
             else:
                 container = next(iter(step_containers.values()))
                 if is_batch:
