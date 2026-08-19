@@ -1,6 +1,8 @@
-# 06. Meta Schema / 공정 흐름 표현력 검토
+# 07. Meta Schema / 공정 흐름 표현력 검토
 
 > P0~P4 구현을 마친 시점에서, "이 스키마로 실제 복잡한 공정을 얼마나 표현할 수 있는가"를 감사한 결과. 코드 변경 없이 조사만 수행했다.
+>
+> **추가 검토(6장)**: 3-5(멀티 제품 자원 경합)에 대한 구체적 해결 방향 — "여러 완제품이 같은 원자재를 가공하는 1번 공정을 거친 뒤, 서로 다른 완제품으로 갈라져 다시 합쳐지지 않는" 구체적 케이스를 검토해달라는 요청에 답하며 B안(공유 네트워크 + Routing-Product Link)을 구성했다. 코드 변경은 아직 안 함 — 설계만.
 
 ## 1. 결론 먼저
 
@@ -77,4 +79,86 @@ process_step_transition
 | 3-4 setup_time 1회성 | 낮음~중간 | 다품종 라인이 아니면 영향 적음 |
 | 3-6 condition 미평가 | 낮음 | 정적 비율(3-1)로 상당수 케이스 대체 가능, 나머지는 별도 규칙 엔진 필요 |
 
-이 중 어느 것부터 실제로 구현할지 결정해주시면 이어서 진행하겠습니다.
+## 6. 3-5 해결 방향 구성 (B안: 공유 네트워크 + Routing-Product Link)
+
+구체적 케이스: 원자재 A가 1번 공정을 거쳐 2가지 타입으로 분리되고, 그 뒤로는 서로 다른 완제품(SKU)으로 갈라져 다시 합쳐지지 않는다. "완제품 기준으로 역순으로 정의할지, Hierarchy하게 구성할지"에 대한 결론: **정의(저장)는 원자재→완제품 방향의 공유 그래프(정순, Hierarchy)로 하고, 제품별 조회만 역순 트레이스로 만든다.** 아래는 그 구체적 스키마·컴파일러·시뮬레이터·API 변경안이다.
+
+### 6-1. 왜 "제품별 독립 그래프 유지"(A안)가 아니라 "공유 그래프"(B안)인가
+
+지금 컴파일/실행 경로를 그대로 따라가 보면: `compile_runs.py:37`이 라우팅 1개(`routing_id`)를 `compile_routing()`에 넘겨 `compiled_graph_object` 1개를 만들고, `simulation_runs.py:89`가 그 결과 1개를 `run_simulation()`에 넘긴다. SimPy `env`/`Resource`는 항상 `simulation.py:79,90`에서 **그 컴파일 결과 범위 안에서만** 새로 생성된다. 즉 지금 아키텍처에서 자원 경쟁이 실제로 반영되는 유일한 조건은 "경쟁하는 스텝들이 같은 `compiled_graph_object.nodes`에 함께 들어 있는 것"이다.
+
+- **A안**(제품별 독립 라우팅 유지)으로 이걸 얻으려면 "여러 `routing_id`를 입력받아 하나의 `compiled_graph_object`로 합성하는 멀티-라우팅 컴파일러"를 **새로 만들어야** 한다 — 지금 없는 기능이고, 만드는 순간 사실상 아래 B안의 `routing_id` 공유를 재발명하는 셈이다.
+- **B안**은 애초에 경쟁하는 상류 스텝을 여러 제품이 **같은 `routing_id` 하나** 안에 두는 것이므로, 지금 있는 컴파일러/시뮬레이터를 그대로 호출하면 경쟁이 이미 반영된다. 새 실행 모드가 필요 없다.
+
+### 6-2. 스키마 변경 — 놀랍게도 매우 작다
+
+핵심 발견: `ProcessStep`(`app/models/process_routing.py:29`)에는 `product_id`가 없다. `product_id`는 오직 부모인 `ProcessRouting`에만 있다(`process_routing.py:14`). 즉 **스텝 정의 자체는 이미 "네트워크 네이티브"**다 — 바꿔야 하는 건 "라우팅 1개 = 제품 1개"라는 지금의 1:1 가정 하나뿐이다.
+
+```python
+class RoutingProductLink(TimestampMixin, Base):
+    """하나의 ProcessRouting(=공유 네트워크)을 여러 제품이 서로 다른
+    entry/terminal 구간으로 소비할 수 있게 하는 N:M 연결."""
+
+    __tablename__ = "routing_product_link"
+    __table_args__ = (UniqueConstraint("routing_id", "product_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    routing_id: Mapped[int] = mapped_column(
+        ForeignKey("process_routing.id", ondelete="CASCADE"), index=True
+    )
+    product_id: Mapped[str] = mapped_column(ForeignKey("product.product_id"), index=True)
+    entry_step_no: Mapped[str] = mapped_column(String(32))
+    terminal_step_nos: Mapped[list] = mapped_column(JSON)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+```
+
+`process_routing.product_id`와 `UniqueConstraint("product_id", "version")`(`process_routing.py:11,14`)는 **그대로 유지**한다 — 의미만 "이 그래프를 최초로 만든/대표하는 제품"으로 좁힌다. 기존 라우팅 전부에 `is_primary=True`인 `RoutingProductLink` 1건을 시딩하는 마이그레이션 한 번으로 하위호환 100% 유지(기존 API 동작 무변화). 포크가 필요해지는 시점에만 두 번째 링크 행을 추가한다: `(routing_id=R1, product_id="Y", entry_step_no="1", terminal_step_nos=["4B"])`.
+
+### 6-3. 포크 지점은 이미 표현 가능 — 단, 3-1과 묶어야 완성됨
+
+`ProcessStepTransition`은 이미 한 스텝에서 여러 `to_step_no`를 허용한다(`process_routing.py:62`, 1:N `next_steps`). "스텝 1 → 2A 또는 2B" 분기 자체는 지금도 만들 수 있다. 문제는 3-1과 정확히 같다: 스텝 1의 `output_item_id`가 단일값이라 "2A로 가는 흐름"과 "2B로 가는 흐름"이 서로 다른 품목이라는 걸 표현할 방법이 없고, 실행 시(`simulation.py:96-105` `put_downstream`)도 무조건 균등분배(`share = qty / len(succs)`, 103행)뿐이라 6:4 같은 비율을 낼 수 없다.
+
+**따라서 3-1과 이번 6장은 함께 구현해야 이번 케이스가 완성된다.** 3-1 수정이 "물리적으로 어떻게 나뉘는가"를, 이번 6장이 "나뉜 뒤 어느 제품 소유가 되는가"를 담당하는 관계다.
+
+### 6-4. 컴파일러/검증 변경
+
+`compiler.py`:
+- `compile_routing`(59행)의 `product = db.query(Product)...`(79행)을 `links = db.query(RoutingProductLink).filter_by(routing_id=routing.id).all()`로 바꾼다.
+- `compiled_graph_object["product_context"]`(179-183행, 지금 단일 dict)를 `product_contexts: [...]`(리스트, 항목마다 `product_id`/`product_name`/`unit`/`entry_step_no`/`terminal_step_nos`)로 바꾼다. **`nodes`/`transitions`/`resource_bindings`/`processing_time_plan`/`queue_plan`은 전혀 안 바뀐다** — 여전히 라우팅 전체를 한 번 순회해서 만드는 그대로다.
+- `graph_summary`(184행 이하)에 `linked_product_ids: [...]`를 추가한다 — 몇 개 제품이 이 네트워크를 공유하는지 한눈에 보이게.
+
+`routing_validation.py`(`build_validation_report`, 15행)에 신규 게이트 추가:
+- `BLOCK_UNRESOLVED_LINK_STEP`: `RoutingProductLink.entry_step_no`/`terminal_step_nos`가 실제 `step_nos`에 없으면 차단.
+- `BLOCK_ORPHAN_TERMINAL_STEP`(신규 발견): `next_steps`가 없는 종단 스텝인데 어떤 링크의 `terminal_step_nos`에도 안 잡혀 있으면 차단 — "만들어놓고 아무 제품도 안 가져가는 브랜치"를 잡는, 지금은 존재하지 않는 무결성 검사.
+
+`app/models/compile_run.py`의 `product_id`(21행, NOT NULL)는 nullable로 완화하거나 `bound_product_ids: JSON` 리스트로 교체한다. `compile_runs.py:42`의 `product_id=routing.product_id`도 함께 수정.
+
+### 6-5. 시뮬레이터 변경 — 최소
+
+이게 이번 설계의 핵심 근거다: `simulation.py`의 실행 루프(`step_process`/`resources`/`containers`, 79-191행)는 **손댈 필요가 없다.** `resources = {key: simpy.Resource(...) ...}`(90행)가 이미 `compiled_graph_object` 전체를 한 번에 순회해 만들어지므로, 스텝 1의 `equipment_group`을 공유하는 2A/2B 하류가 같은 `compiled_graph_object`에 함께 있기만 하면 **자동으로 경쟁한다.**
+
+필요한 추가는 둘뿐이다:
+1. `put_downstream`의 exit 분기(98-102행)에 `"item_id": nodes[from_step_no].get("output_item_id")`를 추가 — 어떤 종단 스텝의 산출인지 사후에 알 수 있게.
+2. summary(212-223행)에 `"exit_qty_by_step": {step_no: qty, ...}`를 추가 — 지금은 `exit_qty`가 전체 합산뿐(195행)이라, 스텝별로 쪼개야 API 레이어가 `RoutingProductLink.terminal_step_nos`로 제품별 처리량을 재구성할 수 있다. `resource_utilization`/`bottleneck_step_no`는 그대로 **네트워크 전체 기준**으로 유지한다(이게 안 바뀌는 게 이번 기능의 존재 이유다).
+
+### 6-6. API 변경
+
+- `POST /products/{product_id}/routings`(`process_routings.py:83`) 동작은 **무변화** — 생성 시 내부적으로 `RoutingProductLink(is_primary=True, ...)` 1건을 자동 생성한다(엔트리/터미널은 predecessor/successor가 없는 step_no로 매번 재계산).
+- 신규: `POST /products/{product_id}/routings/{version}/link` — 다른 제품이 이 라우팅을 공유 네트워크로 참조하도록 등록. `body: {product_id, entry_step_no, terminal_step_nos}`.
+- `GET /products/{product_id}/routings/{version}`(`process_routings.py:99`) 응답은 기본적으로 그 제품의 `RoutingProductLink` 기준 `entry_step_no → terminal_step_nos` 서브그래프만 필터링해서 보여주고, `?scope=network`로 전체 공유 그래프를 볼 수 있게 한다. 이 서브그래프 추출(터미널에서 거슬러 올라가는 역방향 탐색)이 바로 "완제품 기준 역순 조회"가 실제로 구현되는 지점이다.
+- `GET /simulation-runs/{id}/results/summary`(`simulation_runs.py:151`)에 `?product_id=` 파라미터를 추가 — `exit_qty_by_step`(6-5)을 해당 제품의 `terminal_step_nos`로 합산해 제품별 throughput/리드타임을 재계산해서 반환한다. `resource_utilization`은 필터링 없이 그대로 반환한다 — 공유 자원이므로 "제품별 가동률"이라는 개념 자체가 없다는 걸 응답 스키마 문서에 명시해 오해를 막아야 한다.
+
+### 6-7. 우선순위 재정리 (5장 갱신)
+
+3-5는 이제 "구조적으로 불가능"이 아니라 "설계 완료, 구현 대기"다. 단 6-3에서 확인했듯 **3-1과 함께 구현해야 실제로 쓸 수 있다** — 3-1 없이 6-2/6-4/6-5/6-6만 넣으면 "네트워크는 공유되는데 분기 비율은 여전히 균등분배"인 반쪽 기능이 된다.
+
+| 항목 | 심각도 | 구현 순서 제안 |
+|---|---|---|
+| 3-1 Co-product 비율 분기(`process_step_output`) | 높음 | 1순위 — 이게 없으면 6장 전체가 무의미 |
+| 3-5 멀티 제품 자원 경합(`RoutingProductLink`, 6-2/6-4/6-5/6-6) | 높음 | 2순위 — 3-1 위에 얹는 얇은 레이어라 3-1 직후 바로 착수 가능 |
+| 3-3 Recipe 수율/로스 미연결 | 중간 | 그대로 |
+| 3-2 Merge 비대칭 소비 | 중간 | 3-1과 같은 테이블(`process_step_input`)로 함께 처리 |
+| 3-4 setup_time 1회성 | 낮음~중간 | 그대로 |
+| 3-6 condition 미평가 | 낮음 | 그대로 |
+
+이 중 어느 것부터 실제로 구현할지 결정해주시면 이어서 진행하겠습니다 — 다만 6-3에서 확인한 대로 **3-1과 3-5는 분리해서 구현해도 3-5만으로는 쓸 수 없는 상태**가 된다는 점은 감안해주세요.
