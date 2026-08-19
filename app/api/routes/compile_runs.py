@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.compile_run import CompileRun
-from app.models.process_routing import ProcessRouting
+from app.models.process_routing import ProcessRouting, RoutingProductLink
 from app.models.runtime_profile import RuntimeProfile
 from app.schemas.compile_run import CompileRunCreate, CompileRunRead
 from app.services.compiler import compile_routing
@@ -12,8 +12,14 @@ router = APIRouter(prefix="/compile-runs", tags=["compile-runs"])
 
 
 def _get_routing_or_404(db: Session, product_id: str, version: str) -> ProcessRouting:
+    """Looks up via RoutingProductLink, not ProcessRouting.product_id directly, so a product
+    linked (not just the primary owner) to a shared network can also compile it (docs/planning/
+    07-schema-gap-review.md section 6)."""
     routing = (
-        db.query(ProcessRouting).filter_by(product_id=product_id, version=version).one_or_none()
+        db.query(ProcessRouting)
+        .join(RoutingProductLink, RoutingProductLink.routing_id == ProcessRouting.id)
+        .filter(RoutingProductLink.product_id == product_id, ProcessRouting.version == version)
+        .one_or_none()
     )
     if routing is None:
         raise HTTPException(status_code=404, detail=f"routing {product_id}/{version} not found")
@@ -39,7 +45,7 @@ def create_compile_run(payload: CompileRunCreate, db: Session = Depends(get_db))
     compile_run = CompileRun(
         routing_id=routing.id,
         routing_version=routing.version,
-        product_id=routing.product_id,
+        bound_product_ids=[link.product_id for link in routing.product_links],
         runtime_profile_id=runtime_profile.id if runtime_profile else None,
         status=result["status"],
         compiled_graph_object=result["compiled_graph_object"],

@@ -18,7 +18,7 @@ class CompileRun(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     routing_id: Mapped[int] = mapped_column(ForeignKey("process_routing.id"), index=True)
     routing_version: Mapped[str] = mapped_column(String(32))
-    product_id: Mapped[str] = mapped_column(String(64), index=True)
+    bound_product_ids: Mapped[list[str]] = mapped_column(JSON)
     runtime_profile_id: Mapped[int | None] = mapped_column(
         ForeignKey("runtime_profile.id"), nullable=True
     )

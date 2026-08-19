@@ -34,6 +34,7 @@ class SimulationResultSummary(TimestampMixin, Base):
     avg_lead_time: Mapped[float | None] = mapped_column(Float, nullable=True)
     resource_utilization: Mapped[dict] = mapped_column(JSON)
     bottleneck_step_no: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    exit_qty_by_step: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class SimulationEventLog(Base):

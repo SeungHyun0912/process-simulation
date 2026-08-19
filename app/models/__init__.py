@@ -13,6 +13,7 @@ from app.models.process_routing import (  # noqa: F401
     ProcessStep,
     ProcessStepOutput,
     ProcessStepTransition,
+    RoutingProductLink,
 )
 from app.models.product import Product  # noqa: F401
 from app.models.recipe import Recipe  # noqa: F401

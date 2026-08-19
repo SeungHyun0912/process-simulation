@@ -7,6 +7,7 @@ from app.models.process_routing import (
     ProcessStep,
     ProcessStepOutput,
     ProcessStepTransition,
+    RoutingProductLink,
 )
 from app.models.product import Product
 from app.schemas.process_routing import (
@@ -15,9 +16,11 @@ from app.schemas.process_routing import (
     ProcessStepCreate,
     ProcessStepRead,
     ProcessStepUpdate,
+    RoutingLinkCreate,
+    RoutingLinkRead,
     ValidationReport,
 )
-from app.services.routing_validation import build_validation_report
+from app.services.routing_validation import build_validation_report, extract_product_subgraph
 
 router = APIRouter(prefix="/products/{product_id}/routings", tags=["process-routings"])
 
@@ -30,12 +33,40 @@ def _get_product_or_404(db: Session, product_id: str) -> Product:
 
 
 def _get_routing_or_404(db: Session, product_id: str, version: str) -> ProcessRouting:
+    """Looks up via RoutingProductLink, not ProcessRouting.product_id directly, so a product
+    linked (not just the primary owner) to a shared network can reach it under its own path
+    (docs/planning/07-schema-gap-review.md section 6)."""
     routing = (
-        db.query(ProcessRouting).filter_by(product_id=product_id, version=version).one_or_none()
+        db.query(ProcessRouting)
+        .join(RoutingProductLink, RoutingProductLink.routing_id == ProcessRouting.id)
+        .filter(RoutingProductLink.product_id == product_id, ProcessRouting.version == version)
+        .one_or_none()
     )
     if routing is None:
         raise HTTPException(status_code=404, detail=f"routing {product_id}/{version} not found")
     return routing
+
+
+def _get_link_or_404(routing: ProcessRouting, product_id: str) -> RoutingProductLink:
+    for link in routing.product_links:
+        if link.product_id == product_id:
+            return link
+    raise HTTPException(status_code=404, detail=f"product {product_id} is not linked to this routing")
+
+
+def _serialize_routing(routing: ProcessRouting, step_no_filter: set[str] | None = None) -> dict:
+    steps = routing.steps if step_no_filter is None else [s for s in routing.steps if s.step_no in step_no_filter]
+    return {
+        "product_id": routing.product_id,
+        "version": routing.version,
+        "status": routing.status,
+        "graph_completeness_status": routing.graph_completeness_status,
+        "is_active": routing.is_active,
+        "steps": steps,
+        "linked_product_ids": [link.product_id for link in routing.product_links],
+        "created_at": routing.created_at,
+        "updated_at": routing.updated_at,
+    }
 
 
 def _get_step_or_404(routing: ProcessRouting, step_no: str) -> ProcessStep:
@@ -96,7 +127,13 @@ def _apply_step_fields(step: ProcessStep, data: dict) -> None:
 @router.get("", response_model=list[ProcessRoutingRead])
 def list_routings(product_id: str, db: Session = Depends(get_db)) -> list[ProcessRouting]:
     _get_product_or_404(db, product_id)
-    return db.query(ProcessRouting).filter_by(product_id=product_id).order_by(ProcessRouting.id).all()
+    return (
+        db.query(ProcessRouting)
+        .join(RoutingProductLink, RoutingProductLink.routing_id == ProcessRouting.id)
+        .filter(RoutingProductLink.product_id == product_id)
+        .order_by(ProcessRouting.id)
+        .all()
+    )
 
 
 @router.post("", response_model=ProcessRoutingRead, status_code=201)
@@ -110,14 +147,50 @@ def create_routing(
 
     routing = ProcessRouting(product_id=product_id, version=version)
     db.add(routing)
+    db.flush()
+    db.add(RoutingProductLink(routing_id=routing.id, product_id=product_id, is_primary=True))
     db.commit()
     db.refresh(routing)
     return routing
 
 
 @router.get("/{version}", response_model=ProcessRoutingRead)
-def get_routing(product_id: str, version: str, db: Session = Depends(get_db)) -> ProcessRouting:
-    return _get_routing_or_404(db, product_id, version)
+def get_routing(
+    product_id: str, version: str, scope: str = "product", db: Session = Depends(get_db)
+) -> dict:
+    if scope not in ("product", "network"):
+        raise HTTPException(status_code=400, detail="scope must be 'product' or 'network'")
+    routing = _get_routing_or_404(db, product_id, version)
+    if scope == "network":
+        return _serialize_routing(routing)
+    link = _get_link_or_404(routing, product_id)
+    return _serialize_routing(routing, extract_product_subgraph(routing, link))
+
+
+@router.post("/{version}/link", response_model=RoutingLinkRead, status_code=201)
+def link_product(
+    product_id: str, version: str, payload: RoutingLinkCreate, db: Session = Depends(get_db)
+) -> RoutingProductLink:
+    """Register another product as sharing this routing's network, consuming its own
+    entry/terminal subgraph of it (docs/planning/07-schema-gap-review.md section 6)."""
+    routing = _get_routing_or_404(db, product_id, version)
+    _get_product_or_404(db, payload.product_id)
+    if any(link.product_id == payload.product_id for link in routing.product_links):
+        raise HTTPException(
+            status_code=409, detail=f"product {payload.product_id} is already linked to this routing"
+        )
+
+    link = RoutingProductLink(
+        routing_id=routing.id,
+        product_id=payload.product_id,
+        entry_step_nos=payload.entry_step_nos,
+        terminal_step_nos=payload.terminal_step_nos,
+        is_primary=False,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return link
 
 
 @router.post("/{version}/steps", response_model=ProcessStepRead, status_code=201)
@@ -204,6 +277,7 @@ def clone_routing(product_id: str, version: str, db: Session = Depends(get_db)) 
     clone = ProcessRouting(product_id=product_id, version=_next_version(db, product_id), status="draft")
     db.add(clone)
     db.flush()
+    db.add(RoutingProductLink(routing_id=clone.id, product_id=product_id, is_primary=True))
 
     for step in source.steps:
         new_step = ProcessStep(

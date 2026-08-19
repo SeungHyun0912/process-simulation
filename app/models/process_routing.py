@@ -24,6 +24,39 @@ class ProcessRouting(TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="ProcessStep.step_no",
     )
+    product_links: Mapped[list["RoutingProductLink"]] = relationship(
+        back_populates="routing", cascade="all, delete-orphan"
+    )
+
+    @property
+    def linked_product_ids(self) -> list[str]:
+        return [link.product_id for link in self.product_links]
+
+
+class RoutingProductLink(TimestampMixin, Base):
+    """N:M link letting several products share one ProcessRouting network, each consuming a
+    different entry/terminal subgraph of it (docs/planning/07-schema-gap-review.md section 6).
+
+    The primary link (created automatically alongside the routing) always represents the
+    routing's full graph: its entry/terminal steps are computed live from the graph's actual
+    topology (see app.services.routing_validation._live_entry_terminal_steps) rather than
+    stored here, since they can't be known yet at routing-creation time (zero steps exist).
+    Only non-primary (forked) links store explicit entry_step_nos/terminal_step_nos.
+    """
+
+    __tablename__ = "routing_product_link"
+    __table_args__ = (UniqueConstraint("routing_id", "product_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    routing_id: Mapped[int] = mapped_column(
+        ForeignKey("process_routing.id", ondelete="CASCADE"), index=True
+    )
+    product_id: Mapped[str] = mapped_column(ForeignKey("product.product_id"), index=True)
+    entry_step_nos: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    terminal_step_nos: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    routing: Mapped["ProcessRouting"] = relationship(back_populates="product_links")
 
 
 class ProcessStep(TimestampMixin, Base):

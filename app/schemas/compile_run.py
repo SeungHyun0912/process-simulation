@@ -15,7 +15,7 @@ class CompileRunRead(BaseModel):
     id: int
     routing_id: int
     routing_version: str
-    product_id: str
+    bound_product_ids: list[str]
     runtime_profile_id: int | None
     status: str
     compiled_graph_object: dict | None

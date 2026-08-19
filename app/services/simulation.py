@@ -223,6 +223,10 @@ def run_simulation(
     env.run(until=end_time)
 
     exit_qty = sum(e["qty"] for e in event_log if e["event_type"] == "exit")
+    exit_qty_by_step: dict[str, float] = {}
+    for e in event_log:
+        if e["event_type"] == "exit":
+            exit_qty_by_step[e["step_no"]] = exit_qty_by_step.get(e["step_no"], 0.0) + e["qty"]
     throughput_per_day = exit_qty / (end_time / _MINUTES_PER_UNIT["day"]) if end_time else 0.0
     avg_wip = sum(s["total_wip"] for s in wip_snapshots) / len(wip_snapshots) if wip_snapshots else None
     throughput_rate = exit_qty / end_time if end_time else 0.0
@@ -249,5 +253,6 @@ def run_simulation(
             "avg_lead_time": avg_lead_time,
             "resource_utilization": resource_utilization,
             "bottleneck_step_no": bottleneck_step_no,
+            "exit_qty_by_step": exit_qty_by_step,
         },
     }

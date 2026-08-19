@@ -14,7 +14,7 @@ from app.models.location import Location
 from app.models.process_routing import ProcessRouting, ProcessStep
 from app.models.product import Product
 from app.models.runtime_profile import RuntimeProfile
-from app.services.routing_validation import build_validation_report
+from app.services.routing_validation import _link_entry_terminal_steps, build_validation_report
 
 DEFAULT_RUNTIME_ECHO = {
     "time_unit": "day",
@@ -76,7 +76,11 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
     if blocking_errors or report["graph_completeness_status"] in ("incomplete", "blocked"):
         return {"status": "blocked", "compiled_graph_object": None, "validation_report": combined_report}
 
-    product = db.query(Product).filter_by(product_id=routing.product_id).one()
+    links = routing.product_links
+    products_by_id = {
+        p.product_id: p
+        for p in db.query(Product).filter(Product.product_id.in_([link.product_id for link in links])).all()
+    }
     steps_by_no = {s.step_no: s for s in routing.steps}
 
     nodes = []
@@ -179,13 +183,24 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
             queue_entry["merge_policy"] = "wait_for_all_required_inputs"
         queue_plan.append(queue_entry)
 
+    product_contexts = []
+    for link in links:
+        product = products_by_id[link.product_id]
+        entry_steps, terminal_steps = _link_entry_terminal_steps(routing, link)
+        product_contexts.append(
+            {
+                "product_id": product.product_id,
+                "product_name": product.product_name,
+                "unit": product.unit,
+                "entry_step_nos": entry_steps,
+                "terminal_step_nos": terminal_steps,
+                "is_primary": link.is_primary,
+            }
+        )
+
     compiled_graph_object = {
         "compile_target": "simpy",
-        "product_context": {
-            "product_id": product.product_id,
-            "product_name": product.product_name,
-            "unit": product.unit,
-        },
+        "product_contexts": product_contexts,
         "graph_summary": {
             "graph_id": f"GRAPH-{routing.product_id}-{routing.version}",
             "graph_completeness_status": report["graph_completeness_status"],
@@ -193,6 +208,7 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
             "transition_count": len(transitions),
             "has_parallel_branch": bool(parallel_group_ids),
             "has_merge": has_merge,
+            "linked_product_ids": [link.product_id for link in links],
         },
         "nodes": nodes,
         "transitions": transitions,

@@ -30,6 +30,7 @@ class SimulationResultSummaryRead(BaseModel):
     avg_lead_time: float | None
     resource_utilization: dict
     bottleneck_step_no: str | None
+    exit_qty_by_step: dict
 
 
 class SimulationEventLogRead(BaseModel):

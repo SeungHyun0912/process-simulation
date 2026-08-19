@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.compile_run import CompileRun
 from app.models.location import MaterialInboundPlan
+from app.models.process_routing import ProcessRouting
 from app.models.runtime_profile import DEFAULT_OUTPUT_CONTROL, DEFAULT_TIME_CONTROL, RuntimeProfile
 from app.models.simulation_run import (
     SimulationEventLog,
@@ -20,6 +21,7 @@ from app.schemas.simulation_run import (
     SimulationRunRead,
     SimulationWipSnapshotRead,
 )
+from app.services.routing_validation import _link_entry_terminal_steps
 from app.services.simulation import run_simulation
 
 router = APIRouter(prefix="/simulation-runs", tags=["simulation-runs"])
@@ -114,6 +116,7 @@ def create_simulation_run(payload: SimulationRunCreate, db: Session = Depends(ge
             avg_lead_time=summary["avg_lead_time"],
             resource_utilization=summary["resource_utilization"],
             bottleneck_step_no=summary["bottleneck_step_no"],
+            exit_qty_by_step=summary["exit_qty_by_step"],
         )
     )
     for event in result["event_log"]:
@@ -150,10 +153,37 @@ def get_simulation_run(simulation_run_id: int, db: Session = Depends(get_db)) ->
 
 @router.get("/{simulation_run_id}/results/summary", response_model=SimulationResultSummaryRead)
 def get_simulation_summary(
-    simulation_run_id: int, db: Session = Depends(get_db)
-) -> SimulationResultSummary:
-    _get_simulation_run_or_404(db, simulation_run_id)
-    return _get_result_summary_or_404(db, simulation_run_id)
+    simulation_run_id: int, product_id: str | None = None, db: Session = Depends(get_db)
+) -> SimulationResultSummary | dict:
+    run = _get_simulation_run_or_404(db, simulation_run_id)
+    summary = _get_result_summary_or_404(db, simulation_run_id)
+    if product_id is None:
+        return summary
+
+    compile_run = db.get(CompileRun, run.compile_run_id)
+    routing = db.get(ProcessRouting, compile_run.routing_id)
+    link = next((link for link in routing.product_links if link.product_id == product_id), None)
+    if link is None:
+        raise HTTPException(
+            status_code=404, detail=f"product {product_id} is not linked to this simulation's routing"
+        )
+
+    _, terminal_step_nos = _link_entry_terminal_steps(routing, link)
+    filtered_total = sum(summary.exit_qty_by_step.get(step_no, 0.0) for step_no in terminal_step_nos)
+    # Scale proportionally rather than re-deriving duration_days here -- same ratio either way.
+    scale = (summary.throughput_per_day / summary.throughput_total) if summary.throughput_total else 0.0
+
+    return {
+        "throughput_total": filtered_total,
+        "throughput_per_day": filtered_total * scale,
+        # avg_wip/avg_lead_time aren't tracked per-product (WIP isn't attributed to a specific
+        # product's items) -- these stay network-wide, same as resource_utilization below.
+        "avg_wip": summary.avg_wip,
+        "avg_lead_time": summary.avg_lead_time,
+        "resource_utilization": summary.resource_utilization,
+        "bottleneck_step_no": summary.bottleneck_step_no,
+        "exit_qty_by_step": {step_no: summary.exit_qty_by_step.get(step_no, 0.0) for step_no in terminal_step_nos},
+    }
 
 
 @router.get("/{simulation_run_id}/results/events", response_model=list[SimulationEventLogRead])

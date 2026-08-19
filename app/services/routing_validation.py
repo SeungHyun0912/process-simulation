@@ -9,7 +9,51 @@ published before every step's timing is resolved.
 from sqlalchemy.orm import Session
 
 from app.models.equipment import EquipmentGroup
-from app.models.process_routing import ProcessRouting
+from app.models.process_routing import ProcessRouting, RoutingProductLink
+
+
+def _live_entry_terminal_steps(routing: ProcessRouting) -> tuple[list[str], list[str]]:
+    """Steps with no incoming transition (entry) / no outgoing transition (terminal).
+
+    Used for a routing's primary RoutingProductLink, whose entry/terminal steps are never
+    stored -- they can't be known at routing-creation time (zero steps exist yet) and are
+    always recomputed from the graph's actual topology instead.
+    """
+    step_nos = {s.step_no for s in routing.steps}
+    targets = {t.to_step_no for step in routing.steps for t in step.next_steps}
+    sources = {step.step_no for step in routing.steps if step.next_steps}
+    entry_steps = [s for s in step_nos if s not in targets]
+    terminal_steps = [s for s in step_nos if s not in sources]
+    return entry_steps, terminal_steps
+
+
+def _link_entry_terminal_steps(routing: ProcessRouting, link: RoutingProductLink) -> tuple[list[str], list[str]]:
+    if link.is_primary:
+        return _live_entry_terminal_steps(routing)
+    return list(link.entry_step_nos or []), list(link.terminal_step_nos or [])
+
+
+def extract_product_subgraph(routing: ProcessRouting, link: RoutingProductLink) -> set[str]:
+    """Step_nos reachable backward from link's terminal steps, stopping at its entry steps."""
+    entry_steps, terminal_steps = _link_entry_terminal_steps(routing, link)
+    entry_set = set(entry_steps)
+
+    predecessors: dict[str, list[str]] = {s.step_no: [] for s in routing.steps}
+    for step in routing.steps:
+        for transition in step.next_steps:
+            predecessors.setdefault(transition.to_step_no, []).append(step.step_no)
+
+    visited: set[str] = set()
+    queue = list(terminal_steps)
+    while queue:
+        step_no = queue.pop()
+        if step_no in visited:
+            continue
+        visited.add(step_no)
+        if step_no in entry_set:
+            continue
+        queue.extend(predecessors.get(step_no, []))
+    return visited
 
 
 def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
@@ -108,6 +152,40 @@ def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
                     "message": f"step {step.step_no} is provisional",
                 }
             )
+
+    if steps:
+        # NOTE: since a primary link's terminal set is always the routing's full live terminal
+        # set (see _link_entry_terminal_steps), covered_terminals below always includes every
+        # live terminal as long as the routing has its (always-present) primary link -- so this
+        # gate can't currently fire in practice. It becomes meaningful once primary scoping is
+        # refined to mean "whatever forks haven't explicitly claimed" rather than "everything";
+        # left in place (rather than removed) so that refinement doesn't also require re-adding
+        # the gate and its tests from scratch.
+        covered_terminals: set[str] = set()
+        for link in routing.product_links:
+            entry_steps, terminal_steps = _link_entry_terminal_steps(routing, link)
+            covered_terminals.update(terminal_steps)
+            if not link.is_primary:
+                for s in [*entry_steps, *terminal_steps]:
+                    if s not in step_nos:
+                        blocking_errors.append(
+                            {
+                                "rule_id": "BLOCK_UNRESOLVED_LINK_STEP",
+                                "path": f"product_links[{link.product_id}]",
+                                "message": f"{s!r} is not a step in this routing",
+                            }
+                        )
+
+        _, live_terminal_steps = _live_entry_terminal_steps(routing)
+        for step_no in live_terminal_steps:
+            if step_no not in covered_terminals:
+                blocking_errors.append(
+                    {
+                        "rule_id": "BLOCK_ORPHAN_TERMINAL_STEP",
+                        "path": f"steps[{step_no}]",
+                        "message": f"terminal step {step_no} isn't claimed by any linked product",
+                    }
+                )
 
     if not steps:
         completeness = "incomplete"

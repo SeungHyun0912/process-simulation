@@ -49,7 +49,8 @@ def test_compile_succeeds_and_produces_graph_object(client) -> None:
     assert body["status"] == "success"
 
     graph = body["compiled_graph_object"]
-    assert graph["product_context"]["product_id"] == "CV-3C-240"
+    assert graph["product_contexts"][0]["product_id"] == "CV-3C-240"
+    assert graph["graph_summary"]["linked_product_ids"] == ["CV-3C-240"]
     assert graph["graph_summary"]["node_count"] == 1
     assert graph["nodes"][0]["step_no"] == "1"
     assert graph["resource_bindings"][0] == {

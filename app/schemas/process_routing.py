@@ -126,8 +126,24 @@ class ProcessRoutingRead(BaseModel):
     graph_completeness_status: str
     is_active: bool
     steps: list[ProcessStepRead]
+    linked_product_ids: list[str]
     created_at: datetime
     updated_at: datetime
+
+
+class RoutingLinkCreate(BaseModel):
+    product_id: str
+    entry_step_nos: list[str]
+    terminal_step_nos: list[str]
+
+
+class RoutingLinkRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    product_id: str
+    entry_step_nos: list[str] | None
+    terminal_step_nos: list[str] | None
+    is_primary: bool
 
 
 class ValidationIssue(BaseModel):

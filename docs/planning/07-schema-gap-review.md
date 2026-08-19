@@ -4,7 +4,7 @@
 >
 > **추가 검토(6장)**: 3-5(멀티 제품 자원 경합)에 대한 구체적 해결 방향 — "여러 완제품이 같은 원자재를 가공하는 1번 공정을 거친 뒤, 서로 다른 완제품으로 갈라져 다시 합쳐지지 않는" 구체적 케이스를 검토해달라는 요청에 답하며 B안(공유 네트워크 + Routing-Product Link)을 구성했다. 코드 변경은 아직 안 함 — 설계만.
 >
-> **구현 현황**: 3-1(co-product 비율 분기)과 3-2(merge 비대칭 소비)는 **Phase A로 구현 완료**됐다 — `ProcessStepOutput` 테이블(스텝의 산출물을 별도 테이블로 분리)과 `ProcessStepTransition.output_item_id`/`consumption_ratio` 필드로 반영했다. 4장 원안 대비 `process_step_input`(신규 테이블)은 만들지 않고 그 역할을 `ProcessStepTransition.consumption_ratio`로 흡수하는 방향으로 단순화했다(자세한 근거는 승인된 구현 계획 참고, 세션 로컬 경로 `C:\Users\A00220260124\.claude\plans\floating-toasting-hopper.md`). 6장(`RoutingProductLink`, 멀티 제품 공유 네트워크)은 Phase B로 아직 미구현.
+> **구현 현황**: 3-1(co-product 비율 분기)과 3-2(merge 비대칭 소비)는 **Phase A로 구현 완료**됐다 — `ProcessStepOutput` 테이블(스텝의 산출물을 별도 테이블로 분리)과 `ProcessStepTransition.output_item_id`/`consumption_ratio` 필드로 반영했다. 4장 원안 대비 `process_step_input`(신규 테이블)은 만들지 않고 그 역할을 `ProcessStepTransition.consumption_ratio`로 흡수하는 방향으로 단순화했다(자세한 근거는 승인된 구현 계획 참고, 세션 로컬 경로 `C:\Users\A00220260124\.claude\plans\floating-toasting-hopper.md`). **3-5/6장(`RoutingProductLink`, 멀티 제품 공유 네트워크)도 Phase B로 구현 완료**됐다 — 알려진 제약 하나: primary 링크의 terminal은 항상 "전체 그래프 실시간 계산"이라, primary 제품 본인의 `scope=product` 조회는 (다른 제품이 포크해간 분기를 포함해도) 항상 전체 네트워크를 보여준다. 그래서 `BLOCK_ORPHAN_TERMINAL_STEP` 게이트는 지금 조건에서는 사실상 발동하지 않는다 (코드 주석에 명시). 실사용에서 문제가 되면 "primary = 전체" 대신 "primary = 포크되지 않고 남은 나머지"로 다듬어야 한다.
 
 ## 1. 결론 먼저
 
@@ -80,7 +80,7 @@ process_step_transition
 | 항목 | 심각도 | 이유 | 상태 |
 |---|---|---|---|
 | 3-1 Co-product 비율 분기 | 높음 | 질문에서 직접 제기한 케이스, 다품종/부산물 공정에서 흔함 | **완료 (Phase A)** |
-| 3-5 멀티 제품 자원 경합 | 높음 | "실제 공장 전체 용량"을 보려는 목적과 직결되는데 지금 구조로는 원천적으로 불가 | 설계 완료, 구현 대기 (Phase B) |
+| 3-5 멀티 제품 자원 경합 | 높음 | "실제 공장 전체 용량"을 보려는 목적과 직결되는데 지금 구조로는 원천적으로 불가 | **완료 (Phase B)** |
 | 3-3 Recipe 수율/로스 미연결 | 중간 | 필드는 있으니 컴파일러/시뮬레이터 연결만 하면 됨 — 상대적으로 저비용 | 미착수 |
 | 3-2 Merge 비대칭 소비(BOM) | 중간 | 3-1과 같은 근본 원인이라 함께 해결 가능 | **완료 (Phase A)** |
 | 3-4 setup_time 1회성 | 낮음~중간 | 다품종 라인이 아니면 영향 적음 | 미착수 |
@@ -157,17 +157,19 @@ class RoutingProductLink(TimestampMixin, Base):
 - `GET /products/{product_id}/routings/{version}`(`process_routings.py:99`) 응답은 기본적으로 그 제품의 `RoutingProductLink` 기준 `entry_step_no → terminal_step_nos` 서브그래프만 필터링해서 보여주고, `?scope=network`로 전체 공유 그래프를 볼 수 있게 한다. 이 서브그래프 추출(터미널에서 거슬러 올라가는 역방향 탐색)이 바로 "완제품 기준 역순 조회"가 실제로 구현되는 지점이다.
 - `GET /simulation-runs/{id}/results/summary`(`simulation_runs.py:151`)에 `?product_id=` 파라미터를 추가 — `exit_qty_by_step`(6-5)을 해당 제품의 `terminal_step_nos`로 합산해 제품별 throughput/리드타임을 재계산해서 반환한다. `resource_utilization`은 필터링 없이 그대로 반환한다 — 공유 자원이므로 "제품별 가동률"이라는 개념 자체가 없다는 걸 응답 스키마 문서에 명시해 오해를 막아야 한다.
 
-### 6-7. 우선순위 재정리 (5장 갱신)
-
-3-5는 이제 "구조적으로 불가능"이 아니라 "설계 완료, 구현 대기"다. 3-1(Phase A)은 이미 구현됐으므로, 이제 6장(Phase B)만 얹으면 이번 케이스가 완성된다.
+### 6-7. 우선순위 재정리 (5장 갱신) — Phase A/B 모두 구현 완료
 
 | 항목 | 심각도 | 구현 순서 제안 | 상태 |
 |---|---|---|---|
 | 3-1 Co-product 비율 분기(`process_step_output`) | 높음 | 1순위 — 이게 없으면 6장 전체가 무의미 | **완료** |
-| 3-5 멀티 제품 자원 경합(`RoutingProductLink`, 6-2/6-4/6-5/6-6) | 높음 | 2순위 — 3-1 위에 얹는 얇은 레이어라 3-1 직후 바로 착수 가능 | 다음 단계 (Phase B) |
+| 3-5 멀티 제품 자원 경합(`RoutingProductLink`, 6-2/6-4/6-5/6-6) | 높음 | 2순위 — 3-1 위에 얹는 얇은 레이어라 3-1 직후 바로 착수 가능 | **완료** |
 | 3-3 Recipe 수율/로스 미연결 | 중간 | 그대로 | 미착수 |
 | 3-2 Merge 비대칭 소비 | 중간 | 3-1과 같은 테이블(`process_step_input`)로 함께 처리 → 실제로는 `consumption_ratio`로 흡수 | **완료** |
 | 3-4 setup_time 1회성 | 낮음~중간 | 그대로 | 미착수 |
 | 3-6 condition 미평가 | 낮음 | 그대로 | 미착수 |
 
-다음은 Phase B(`RoutingProductLink`) 구현입니다.
+**Phase B 구현에서 확인된 사항**:
+- `entry_step_no`(단수)는 계획 단계에서 이미 `entry_step_nos`(복수, JSON 리스트)로 보강해서 구현했다 — 공통 조상 없는 진입점이 여러 개인 서브그래프도 지원.
+- primary 링크의 entry/terminal은 정말로 저장하지 않고 매번 실시간 계산한다(`_live_entry_terminal_steps`) — 닭-달걀 문제 해결.
+- `compile_run.product_id`(단일)는 `bound_product_ids`(리스트)로 교체했다.
+- **알려진 제약**: primary 링크의 terminal이 항상 "전체 그래프"이기 때문에, primary 제품 자신의 `scope=product` 조회 결과가 다른 제품이 포크해간 분기까지 포함한다(교차검증 E2E 테스트에서 실제로 확인됨 — X는 2A+2B 둘 다, Y는 2B만). 물리적으로 "이 제품만의 것"을 보고 싶다면 primary 제품도 명시적으로 `/link`를 통해 자기 자신의 좁은 범위를 다시 등록해야 하는데, 지금은 제품당 링크 1개 제약(`UniqueConstraint(routing_id, product_id)`)이 이를 막는다. 실사용에서 필요해지면 이 제약을 풀거나 "primary = 포크되지 않은 나머지"로 알고리즘을 바꿔야 한다.
