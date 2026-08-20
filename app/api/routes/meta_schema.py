@@ -8,11 +8,13 @@ from app.schemas.meta_schema import CommonFieldRead, FieldMappingRead
 router = APIRouter(prefix="/meta-schema", tags=["meta-schema"])
 
 
+# List the reference catalog of common (CF_*) fields. Read-only master data.
 @router.get("/common-fields", response_model=list[CommonFieldRead])
 def list_common_fields(db: Session = Depends(get_db)) -> list[MetaCommonField]:
     return db.query(MetaCommonField).order_by(MetaCommonField.common_field_code).all()
 
 
+# List field mappings, optionally scoped to one entity type. Read-only master data.
 @router.get("/field-mappings", response_model=list[FieldMappingRead])
 def list_field_mappings(
     entity_scope: str | None = None, db: Session = Depends(get_db)

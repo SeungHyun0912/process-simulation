@@ -26,6 +26,9 @@ def _get_routing_or_404(db: Session, product_id: str, version: str) -> ProcessRo
     return routing
 
 
+# Compile a routing's graph (plus optional runtime profile) into the compiled_graph_object that
+# the simulation engine consumes; the compiler itself decides pass/fail (see compile_routing) --
+# this endpoint just persists whatever status/report it returns.
 @router.post("", response_model=CompileRunRead, status_code=201)
 def create_compile_run(payload: CompileRunCreate, db: Session = Depends(get_db)) -> CompileRun:
     routing = _get_routing_or_404(db, payload.product_id, payload.version)
@@ -45,6 +48,8 @@ def create_compile_run(payload: CompileRunCreate, db: Session = Depends(get_db))
     compile_run = CompileRun(
         routing_id=routing.id,
         routing_version=routing.version,
+        # Snapshot every product currently linked to this routing at compile time, since the
+        # routing's links can change later while this compile run stays a fixed historical record.
         bound_product_ids=[link.product_id for link in routing.product_links],
         runtime_profile_id=runtime_profile.id if runtime_profile else None,
         status=result["status"],

@@ -27,6 +27,7 @@ from app.services.simulation import run_simulation
 router = APIRouter(prefix="/simulation-runs", tags=["simulation-runs"])
 
 
+# Fetch a simulation run by id or 404.
 def _get_simulation_run_or_404(db: Session, simulation_run_id: int) -> SimulationRun:
     run = db.get(SimulationRun, simulation_run_id)
     if run is None:
@@ -34,6 +35,7 @@ def _get_simulation_run_or_404(db: Session, simulation_run_id: int) -> Simulatio
     return run
 
 
+# Fetch a run's result summary or 404 (e.g. run hasn't finished, or it failed before producing one).
 def _get_result_summary_or_404(db: Session, simulation_run_id: int) -> SimulationResultSummary:
     summary = db.query(SimulationResultSummary).filter_by(simulation_run_id=simulation_run_id).one_or_none()
     if summary is None:
@@ -41,11 +43,15 @@ def _get_result_summary_or_404(db: Session, simulation_run_id: int) -> Simulatio
     return summary
 
 
+# Run the SimPy engine against a compile run's compiled_graph_object and persist the results
+# (or, on engine failure, persist a failed run with the error instead of raising -- a bad
+# simulation run is still a run worth recording, not a 500).
 @router.post("", response_model=SimulationRunRead, status_code=201)
 def create_simulation_run(payload: SimulationRunCreate, db: Session = Depends(get_db)) -> SimulationRun:
     compile_run = db.get(CompileRun, payload.compile_run_id)
     if compile_run is None:
         raise HTTPException(status_code=404, detail=f"compile run {payload.compile_run_id} not found")
+    # Only a successfully compiled graph has a usable compiled_graph_object to simulate.
     if compile_run.status != "success":
         raise HTTPException(
             status_code=409,
@@ -62,9 +68,12 @@ def create_simulation_run(payload: SimulationRunCreate, db: Session = Depends(ge
                 status_code=404, detail=f"runtime profile {payload.runtime_profile_name} not found"
             )
 
+    # Fall back to system defaults when no runtime profile was requested.
     time_control = runtime_profile.time_control if runtime_profile else dict(DEFAULT_TIME_CONTROL)
     output_control = runtime_profile.output_control if runtime_profile else dict(DEFAULT_OUTPUT_CONTROL)
 
+    # Material inbound plans are global (not scoped to this routing/compile run); the engine
+    # applies payload.material_inbound_overrides on top of them for this specific run.
     inbound_plans = [
         {
             "plan_id": p.plan_id,
@@ -96,6 +105,7 @@ def create_simulation_run(payload: SimulationRunCreate, db: Session = Depends(ge
             payload.material_inbound_overrides,
         )
     except Exception as exc:  # noqa: BLE001 -- surfaced to the caller via error_message, not re-raised
+        # Engine failure isn't an API error: record it as a failed run and return 201, same as success.
         simulation_run.status = "failed"
         simulation_run.finished_at = datetime.now(timezone.utc)
         simulation_run.error_message = str(exc)
@@ -106,6 +116,7 @@ def create_simulation_run(payload: SimulationRunCreate, db: Session = Depends(ge
     simulation_run.status = "succeeded"
     simulation_run.finished_at = datetime.now(timezone.utc)
 
+    # Persist the network-wide summary plus the full per-event and per-snapshot detail rows.
     summary = result["summary"]
     db.add(
         SimulationResultSummary(
@@ -151,6 +162,8 @@ def get_simulation_run(simulation_run_id: int, db: Session = Depends(get_db)) ->
     return _get_simulation_run_or_404(db, simulation_run_id)
 
 
+# Result summary is stored network-wide (one row per run); product_id re-derives a per-product
+# view by filtering exit quantities down to just that product's terminal steps.
 @router.get("/{simulation_run_id}/results/summary", response_model=SimulationResultSummaryRead)
 def get_simulation_summary(
     simulation_run_id: int, product_id: str | None = None, db: Session = Depends(get_db)
@@ -168,6 +181,7 @@ def get_simulation_summary(
             status_code=404, detail=f"product {product_id} is not linked to this simulation's routing"
         )
 
+    # Only count throughput that exited through this product's own terminal steps.
     _, terminal_step_nos = _link_entry_terminal_steps(routing, link)
     filtered_total = sum(summary.exit_qty_by_step.get(step_no, 0.0) for step_no in terminal_step_nos)
     # Scale proportionally rather than re-deriving duration_days here -- same ratio either way.
@@ -186,6 +200,7 @@ def get_simulation_summary(
     }
 
 
+# Paginated, optionally filtered event log for a run.
 @router.get("/{simulation_run_id}/results/events", response_model=list[SimulationEventLogRead])
 def get_simulation_events(
     simulation_run_id: int,
@@ -204,6 +219,7 @@ def get_simulation_events(
     return query.order_by(SimulationEventLog.sim_time).offset(offset).limit(limit).all()
 
 
+# Time-ordered WIP snapshots for a run.
 @router.get("/{simulation_run_id}/results/wip-snapshots", response_model=list[SimulationWipSnapshotRead])
 def get_simulation_wip_snapshots(
     simulation_run_id: int, db: Session = Depends(get_db)
@@ -217,6 +233,8 @@ def get_simulation_wip_snapshots(
     )
 
 
+# Resource utilization is only ever network-wide (no per-product breakdown, same reasoning as
+# avg_wip/avg_lead_time above), so this just returns the stored field directly.
 @router.get("/{simulation_run_id}/results/resource-utilization")
 def get_simulation_resource_utilization(
     simulation_run_id: int, db: Session = Depends(get_db)

@@ -48,5 +48,5 @@ class MaterialInboundPlan(TimestampMixin, Base):
     inbound_qty: Mapped[float] = mapped_column(Float)
     inbound_unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
     interval_value: Mapped[float] = mapped_column(Float, default=1)
-    interval_unit: Mapped[str] = mapped_column(String(16), default="day")
-    schema_status: Mapped[str] = mapped_column(String(32), default="provisional")
+    interval_unit: Mapped[str] = mapped_column(String(16), default="day")  # default cadence: one arrival per day
+    schema_status: Mapped[str] = mapped_column(String(32), default="provisional")  # "provisional" until confirmed/reviewed data

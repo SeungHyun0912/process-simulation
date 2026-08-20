@@ -5,6 +5,9 @@ from app.db.base import Base, TimestampMixin
 
 
 class UploadJob(TimestampMixin, Base):
+    """One uploaded source file and its end-to-end LLM ingestion lifecycle: parse -> classify
+    into UploadJobDraft rows -> human review -> promotion into the real master-data tables."""
+
     __tablename__ = "upload_job"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -33,7 +36,7 @@ class UploadJobDraft(TimestampMixin, Base):
     )
     entity_key: Mapped[str] = mapped_column(String(64))  # e.g. "product", "equipment_group"
     source_label: Mapped[str | None] = mapped_column(String(128), nullable=True)  # sheet/table name
-    records: Mapped[list] = mapped_column(JSON)
+    records: Mapped[list] = mapped_column(JSON)  # extracted candidate rows, not yet promoted into real tables
     status: Mapped[str] = mapped_column(String(32), default="awaiting_review")
 
     upload_job: Mapped["UploadJob"] = relationship(back_populates="drafts")
@@ -54,8 +57,8 @@ class UploadFieldMapping(Base):
         ForeignKey("meta_common_field.id"), nullable=True
     )
     mapped_canonical_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    decided_by: Mapped[str] = mapped_column(String(16), default="llm")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)  # LLM's self-reported confidence in this mapping
+    decided_by: Mapped[str] = mapped_column(String(16), default="llm")  # "llm" vs. a human override during review
 
     upload_job: Mapped["UploadJob"] = relationship(back_populates="field_mappings")
 
@@ -73,4 +76,4 @@ class UploadFieldAlias(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     raw_header_text_normalized: Mapped[str] = mapped_column(String(256), unique=True, index=True)
     common_field_id: Mapped[int] = mapped_column(ForeignKey("meta_common_field.id"))
-    hit_count: Mapped[int] = mapped_column(default=1)
+    hit_count: Mapped[int] = mapped_column(default=1)  # how many times this learned alias has been reused

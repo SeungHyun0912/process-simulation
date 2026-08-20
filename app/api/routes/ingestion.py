@@ -16,6 +16,7 @@ from app.services import file_parsing, ingestion
 router = APIRouter(prefix="/ingestion/jobs", tags=["ingestion"])
 
 
+# Fetch an upload job by id or 404.
 def _get_job_or_404(db: Session, job_id: int) -> UploadJob:
     job = db.get(UploadJob, job_id)
     if job is None:
@@ -23,6 +24,7 @@ def _get_job_or_404(db: Session, job_id: int) -> UploadJob:
     return job
 
 
+# Fetch a draft scoped to its parent job (so a draft id from another job can't be addressed here) or 404.
 def _get_draft_or_404(db: Session, job_id: int, draft_id: int) -> UploadJobDraft:
     draft = db.query(UploadJobDraft).filter_by(id=draft_id, upload_job_id=job_id).one_or_none()
     if draft is None:
@@ -30,6 +32,9 @@ def _get_draft_or_404(db: Session, job_id: int, draft_id: int) -> UploadJobDraft
     return draft
 
 
+# Run the classify -> extract -> draft pipeline (app.services.ingestion), capturing any failure
+# (including LLM errors) onto the job itself rather than raising, since the job row is the only
+# thing the client can poll for outcome.
 def _run_job(db: Session, job: UploadJob, tables: list[dict]) -> None:
     try:
         ingestion.run_ingestion_job(db, job, tables)
@@ -39,6 +44,8 @@ def _run_job(db: Session, job: UploadJob, tables: list[dict]) -> None:
     db.commit()
 
 
+# Entry point for spreadsheet uploads: infer source_type from the file extension, parse it into
+# raw tables, then hand off to the shared ingestion pipeline.
 @router.post("/file", response_model=UploadJobRead, status_code=201)
 def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)) -> UploadJob:
     filename = file.filename or ""
@@ -57,6 +64,8 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)) -> 
     db.add(job)
     db.flush()
 
+    # Parsing (file format) is a separate failure mode from classification/extraction (_run_job),
+    # so it's caught here with its own error prefix rather than folded into _run_job.
     try:
         tables = file_parsing.parse_source(source_type, raw_bytes=raw_bytes)
     except Exception as exc:  # noqa: BLE001 -- surfaced via job.error_message, not re-raised
@@ -71,6 +80,8 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)) -> 
     return job
 
 
+# Entry point for JSON/array uploads (no file, no extension to infer from -- source_type and
+# table_name are supplied explicitly by the caller instead).
 @router.post("/payload", response_model=UploadJobRead, status_code=201)
 def upload_payload(payload: JsonPayloadUpload, db: Session = Depends(get_db)) -> UploadJob:
     if payload.source_type not in ("json", "array"):
@@ -106,6 +117,8 @@ def list_field_mappings(job_id: int, db: Session = Depends(get_db)) -> list[Uplo
     return db.query(UploadFieldMapping).filter_by(upload_job_id=job_id).all()
 
 
+# Let a reviewer correct the LLM-extracted records before promotion; only allowed while the
+# draft is still awaiting review (not yet approved/rejected).
 @router.patch("/{job_id}/drafts/{draft_id}", response_model=UploadJobDraftRead)
 def update_draft(
     job_id: int, draft_id: int, payload: UploadDraftUpdate, db: Session = Depends(get_db)
@@ -119,6 +132,8 @@ def update_draft(
     return draft
 
 
+# Promote a reviewed draft's records into the real master-data table, then learn from this job's
+# confident LLM column mappings so future uploads with the same headers skip re-classification.
 @router.post("/{job_id}/drafts/{draft_id}/approve", response_model=PromoteResult)
 def approve_draft(job_id: int, draft_id: int, db: Session = Depends(get_db)) -> dict:
     draft = _get_draft_or_404(db, job_id, draft_id)

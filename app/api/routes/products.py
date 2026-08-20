@@ -8,6 +8,7 @@ from app.schemas.product import ProductCreate, ProductRead, ProductUpdate
 router = APIRouter(prefix="/products", tags=["products"])
 
 
+# Fetch a product by its business key, 404 if missing.
 def _get_product_or_404(db: Session, product_id: str) -> Product:
     product = db.query(Product).filter_by(product_id=product_id).one_or_none()
     if product is None:
@@ -15,6 +16,7 @@ def _get_product_or_404(db: Session, product_id: str) -> Product:
     return product
 
 
+# List products, optionally filtered by status and/or product type.
 @router.get("", response_model=list[ProductRead])
 def list_products(
     status: str | None = None,
@@ -29,6 +31,7 @@ def list_products(
     return query.order_by(Product.id).all()
 
 
+# Create a product, rejecting a duplicate product_id.
 @router.post("", response_model=ProductRead, status_code=201)
 def create_product(payload: ProductCreate, db: Session = Depends(get_db)) -> Product:
     existing = db.query(Product).filter_by(product_id=payload.product_id).one_or_none()
@@ -42,11 +45,13 @@ def create_product(payload: ProductCreate, db: Session = Depends(get_db)) -> Pro
     return product
 
 
+# Get a single product by id.
 @router.get("/{product_id}", response_model=ProductRead)
 def get_product(product_id: str, db: Session = Depends(get_db)) -> Product:
     return _get_product_or_404(db, product_id)
 
 
+# Partial update of a product; only fields present in the payload change.
 @router.patch("/{product_id}", response_model=ProductRead)
 def update_product(
     product_id: str, payload: ProductUpdate, db: Session = Depends(get_db)

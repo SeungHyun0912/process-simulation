@@ -3,6 +3,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
 
+# Default JSON blueprints for RuntimeProfile's columns below. Each is copied via `dict(...)`
+# in a `default=lambda: ...` factory (not passed as a bare dict) so SQLAlchemy doesn't share
+# one mutable dict instance across every row that relies on the default.
 DEFAULT_TIME_CONTROL = {
     "time_unit": "day",
     "base_time_granularity": "minute",

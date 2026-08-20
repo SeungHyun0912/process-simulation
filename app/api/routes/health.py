@@ -8,11 +8,13 @@ from app.db.session import get_db
 router = APIRouter(tags=["health"])
 
 
+# Liveness check: the API process is up.
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok"}
 
 
+# Readiness check: confirms the DB connection actually works.
 @router.get("/health/db")
 def health_db(db: Session = Depends(get_db)) -> dict:
     try:

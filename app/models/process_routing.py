@@ -30,6 +30,7 @@ class ProcessRouting(TimestampMixin, Base):
 
     @property
     def linked_product_ids(self) -> list[str]:
+        """Every product (primary + forked) that consumes some subgraph of this routing."""
         return [link.product_id for link in self.product_links]
 
 
@@ -60,6 +61,9 @@ class RoutingProductLink(TimestampMixin, Base):
 
 
 class ProcessStep(TimestampMixin, Base):
+    """One node in a ProcessRouting graph: a single processing operation with its timing,
+    equipment, location, and flow-control settings."""
+
     __tablename__ = "process_step"
     __table_args__ = (UniqueConstraint("routing_id", "step_no"),)
 
@@ -86,9 +90,9 @@ class ProcessStep(TimestampMixin, Base):
     inbound_route_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     batch_size: Mapped[float | None] = mapped_column(Float, nullable=True)
     batch_unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    process_specific: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    schema_status: Mapped[str] = mapped_column(String(32), default="provisional")
-    reference_status: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    process_specific: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # free-form fields not yet promoted to the common schema
+    schema_status: Mapped[str] = mapped_column(String(32), default="provisional")  # "provisional" until confirmed/reviewed data
+    reference_status: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # per-field validation/reference-resolution results (e.g. dangling FK checks)
 
     routing: Mapped["ProcessRouting"] = relationship(back_populates="steps")
     next_steps: Mapped[list["ProcessStepTransition"]] = relationship(
@@ -120,6 +124,9 @@ class ProcessStepOutput(Base):
 
 
 class ProcessStepTransition(Base):
+    """A directed edge in a ProcessRouting graph: from_step -> to_step_no, optionally gated by a
+    condition and carrying a specific output item forward (supports branching/parallel flows)."""
+
     __tablename__ = "process_step_transition"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -127,8 +134,8 @@ class ProcessStepTransition(Base):
         ForeignKey("process_step.id", ondelete="CASCADE"), index=True
     )
     to_step_no: Mapped[str] = mapped_column(String(32))
-    condition: Mapped[str] = mapped_column(String(256), default="")
-    interpreted_condition: Mapped[str] = mapped_column(String(32), default="always_true")
+    condition: Mapped[str] = mapped_column(String(256), default="")  # raw user-authored condition expression
+    interpreted_condition: Mapped[str] = mapped_column(String(32), default="always_true")  # compiler's normalized reading of `condition`
     output_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     consumption_ratio: Mapped[float] = mapped_column(Float, default=1.0)
 

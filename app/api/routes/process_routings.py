@@ -25,6 +25,7 @@ from app.services.routing_validation import build_validation_report, extract_pro
 router = APIRouter(prefix="/products/{product_id}/routings", tags=["process-routings"])
 
 
+# Fetch a product by natural key or 404.
 def _get_product_or_404(db: Session, product_id: str) -> Product:
     product = db.query(Product).filter_by(product_id=product_id).one_or_none()
     if product is None:
@@ -47,6 +48,7 @@ def _get_routing_or_404(db: Session, product_id: str, version: str) -> ProcessRo
     return routing
 
 
+# Find this product's RoutingProductLink within an already-loaded routing, or 404.
 def _get_link_or_404(routing: ProcessRouting, product_id: str) -> RoutingProductLink:
     for link in routing.product_links:
         if link.product_id == product_id:
@@ -54,6 +56,8 @@ def _get_link_or_404(routing: ProcessRouting, product_id: str) -> RoutingProduct
     raise HTTPException(status_code=404, detail=f"product {product_id} is not linked to this routing")
 
 
+# Builds the routing response body; step_no_filter narrows `steps` to one product's subgraph
+# (scope=product) instead of the full shared network (scope=network).
 def _serialize_routing(routing: ProcessRouting, step_no_filter: set[str] | None = None) -> dict:
     steps = routing.steps if step_no_filter is None else [s for s in routing.steps if s.step_no in step_no_filter]
     return {
@@ -69,6 +73,7 @@ def _serialize_routing(routing: ProcessRouting, step_no_filter: set[str] | None 
     }
 
 
+# Find a step by step_no within an already-loaded routing, or 404.
 def _get_step_or_404(routing: ProcessRouting, step_no: str) -> ProcessStep:
     for step in routing.steps:
         if step.step_no == step_no:
@@ -76,11 +81,13 @@ def _get_step_or_404(routing: ProcessRouting, step_no: str) -> ProcessStep:
     raise HTTPException(status_code=404, detail=f"step {step_no} not found in this routing")
 
 
+# Auto-generate the next "vN" version label for a product's routings.
 def _next_version(db: Session, product_id: str) -> str:
     count = db.query(ProcessRouting).filter_by(product_id=product_id).count()
     return f"v{count + 1}"
 
 
+# Published/archived routings are immutable history; only draft/validated ones can still be edited.
 def _require_editable(routing: ProcessRouting) -> None:
     if routing.status not in ("draft", "validated"):
         raise HTTPException(
@@ -89,6 +96,8 @@ def _require_editable(routing: ProcessRouting) -> None:
         )
 
 
+# Shared create/update logic for a step: applies scalar fields, then fully replaces its
+# outputs and next_steps children (rather than diffing), since both are small nested lists.
 def _apply_step_fields(step: ProcessStep, data: dict) -> None:
     next_steps_payload = data.pop("next_steps", None)
     outputs_payload = data.pop("outputs", None)
@@ -98,6 +107,7 @@ def _apply_step_fields(step: ProcessStep, data: dict) -> None:
     # FM_ROUTING_STD_TIME_PER.editable=false: always recomputed from std_speed, never taken from input.
     step.std_time_per = round(1 / step.std_speed, 6) if step.std_speed else None
 
+    # Only touch outputs when the caller actually sent an outputs list (PATCH may omit it).
     if outputs_payload is not None:
         step.outputs.clear()
         for output in outputs_payload:
@@ -109,6 +119,8 @@ def _apply_step_fields(step: ProcessStep, data: dict) -> None:
                 )
             )
 
+    # Same replace-all treatment for outgoing transitions; an empty condition means the
+    # transition is unconditional, otherwise it's evaluated as an application-defined expression.
     if next_steps_payload is not None:
         step.next_steps.clear()
         for transition in next_steps_payload:
@@ -124,6 +136,7 @@ def _apply_step_fields(step: ProcessStep, data: dict) -> None:
             )
 
 
+# List every routing this product is linked to (as primary owner or shared-network participant).
 @router.get("", response_model=list[ProcessRoutingRead])
 def list_routings(product_id: str, db: Session = Depends(get_db)) -> list[ProcessRouting]:
     _get_product_or_404(db, product_id)
@@ -136,6 +149,8 @@ def list_routings(product_id: str, db: Session = Depends(get_db)) -> list[Proces
     )
 
 
+# Create a new routing for a product, auto-versioning if none was given, and register the
+# product as this routing's primary link (the owner whose subgraph defaults to the full graph).
 @router.post("", response_model=ProcessRoutingRead, status_code=201)
 def create_routing(
     product_id: str, payload: ProcessRoutingCreate, db: Session = Depends(get_db)
@@ -162,7 +177,9 @@ def get_routing(
         raise HTTPException(status_code=400, detail="scope must be 'product' or 'network'")
     routing = _get_routing_or_404(db, product_id, version)
     if scope == "network":
+        # Unfiltered: every step in the shared routing, regardless of which product owns which part.
         return _serialize_routing(routing)
+    # Default: only the steps reachable within this product's own entry/terminal subgraph.
     link = _get_link_or_404(routing, product_id)
     return _serialize_routing(routing, extract_product_subgraph(routing, link))
 
@@ -199,6 +216,7 @@ def add_step(
 ) -> ProcessStep:
     routing = _get_routing_or_404(db, product_id, version)
     _require_editable(routing)
+    # step_no is the natural key within a routing; reject duplicates.
     if any(s.step_no == payload.step_no for s in routing.steps):
         raise HTTPException(status_code=409, detail=f"step {payload.step_no} already exists")
 
@@ -206,6 +224,7 @@ def add_step(
     step = ProcessStep(routing_id=routing.id, step_no=data.pop("step_no"))
     _apply_step_fields(step, data)
     db.add(step)
+    # Any structural edit invalidates a prior "validated" status; it must be re-validated.
     routing.status = "draft"
     db.commit()
     db.refresh(step)
@@ -224,6 +243,7 @@ def update_step(
     _require_editable(routing)
     step = _get_step_or_404(routing, step_no)
     _apply_step_fields(step, payload.model_dump(exclude_unset=True))
+    # Any structural edit invalidates a prior "validated" status; it must be re-validated.
     routing.status = "draft"
     db.commit()
     db.refresh(step)
@@ -236,10 +256,12 @@ def delete_step(product_id: str, version: str, step_no: str, db: Session = Depen
     _require_editable(routing)
     step = _get_step_or_404(routing, step_no)
     db.delete(step)
+    # Removing a step can break the graph's completeness; force re-validation.
     routing.status = "draft"
     db.commit()
 
 
+# Run the graph validation gates; promotes draft -> validated only when nothing blocking was found.
 @router.post("/{version}/validate", response_model=ValidationReport)
 def validate_routing(product_id: str, version: str, db: Session = Depends(get_db)) -> dict:
     routing = _get_routing_or_404(db, product_id, version)
@@ -250,6 +272,9 @@ def validate_routing(product_id: str, version: str, db: Session = Depends(get_db
     return report
 
 
+# Publish a routing: re-runs validation as a gate (status alone isn't trusted -- e.g. equipment
+# masters may have changed since /validate ran), then deactivates any other active version for
+# this product so exactly one routing version is ever "live" per product.
 @router.post("/{version}/publish", response_model=ProcessRoutingRead)
 def publish_routing(product_id: str, version: str, db: Session = Depends(get_db)) -> ProcessRouting:
     routing = _get_routing_or_404(db, product_id, version)
@@ -271,6 +296,8 @@ def publish_routing(product_id: str, version: str, db: Session = Depends(get_db)
     return routing
 
 
+# Deep-copy a routing (steps, outputs, transitions) into a new draft version so a published/
+# archived routing can be edited again without mutating immutable history.
 @router.post("/{version}/clone", response_model=ProcessRoutingRead, status_code=201)
 def clone_routing(product_id: str, version: str, db: Session = Depends(get_db)) -> ProcessRouting:
     source = _get_routing_or_404(db, product_id, version)
@@ -279,6 +306,7 @@ def clone_routing(product_id: str, version: str, db: Session = Depends(get_db)) 
     db.flush()
     db.add(RoutingProductLink(routing_id=clone.id, product_id=product_id, is_primary=True))
 
+    # Copy every step's scalar fields plus its outputs and outgoing transitions verbatim.
     for step in source.steps:
         new_step = ProcessStep(
             routing_id=clone.id,

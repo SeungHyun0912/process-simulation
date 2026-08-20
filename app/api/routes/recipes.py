@@ -8,6 +8,7 @@ from app.schemas.recipe import RecipeCreate, RecipeRead, RecipeUpdate
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
+# Fetch a recipe by its business key, 404 if missing.
 def _get_recipe_or_404(db: Session, recipe_id: str) -> Recipe:
     recipe = db.query(Recipe).filter_by(recipe_id=recipe_id).one_or_none()
     if recipe is None:
@@ -15,6 +16,7 @@ def _get_recipe_or_404(db: Session, recipe_id: str) -> Recipe:
     return recipe
 
 
+# List recipes, optionally filtered by product and/or process.
 @router.get("", response_model=list[RecipeRead])
 def list_recipes(
     product_id: str | None = None, process_id: str | None = None, db: Session = Depends(get_db)
@@ -27,6 +29,7 @@ def list_recipes(
     return query.order_by(Recipe.id).all()
 
 
+# Create a recipe, rejecting a duplicate recipe_id.
 @router.post("", response_model=RecipeRead, status_code=201)
 def create_recipe(payload: RecipeCreate, db: Session = Depends(get_db)) -> Recipe:
     if db.query(Recipe).filter_by(recipe_id=payload.recipe_id).one_or_none():
@@ -38,11 +41,13 @@ def create_recipe(payload: RecipeCreate, db: Session = Depends(get_db)) -> Recip
     return recipe
 
 
+# Get a single recipe by id.
 @router.get("/{recipe_id}", response_model=RecipeRead)
 def get_recipe(recipe_id: str, db: Session = Depends(get_db)) -> Recipe:
     return _get_recipe_or_404(db, recipe_id)
 
 
+# Partial update of a recipe; only fields present in the payload change.
 @router.patch("/{recipe_id}", response_model=RecipeRead)
 def update_recipe(recipe_id: str, payload: RecipeUpdate, db: Session = Depends(get_db)) -> Recipe:
     recipe = _get_recipe_or_404(db, recipe_id)
@@ -53,6 +58,7 @@ def update_recipe(recipe_id: str, payload: RecipeUpdate, db: Session = Depends(g
     return recipe
 
 
+# Delete a recipe.
 @router.delete("/{recipe_id}", status_code=204)
 def delete_recipe(recipe_id: str, db: Session = Depends(get_db)) -> None:
     recipe = _get_recipe_or_404(db, recipe_id)

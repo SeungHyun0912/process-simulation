@@ -18,11 +18,11 @@ class CompileRun(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     routing_id: Mapped[int] = mapped_column(ForeignKey("process_routing.id"), index=True)
     routing_version: Mapped[str] = mapped_column(String(32))
-    bound_product_ids: Mapped[list[str]] = mapped_column(JSON)
+    bound_product_ids: Mapped[list[str]] = mapped_column(JSON)  # snapshot of routing.product_links at compile time
     runtime_profile_id: Mapped[int | None] = mapped_column(
         ForeignKey("runtime_profile.id"), nullable=True
     )
     status: Mapped[str] = mapped_column(String(16))
-    compiled_graph_object: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    validation_report: Mapped[dict] = mapped_column(JSON)
+    compiled_graph_object: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # SimPy-ready graph; null unless compile succeeded
+    validation_report: Mapped[dict] = mapped_column(JSON)  # structured errors/warnings surfaced regardless of pass/fail
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)

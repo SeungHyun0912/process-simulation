@@ -1,3 +1,5 @@
+"""Aggregates every route module's router into the single router app.main mounts."""
+
 from fastapi import APIRouter
 
 from app.api.routes import (

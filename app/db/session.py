@@ -12,6 +12,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def get_db() -> Generator[Session, None, None]:
+    """FastAPI dependency: one Session per request, always closed afterward. Tests override
+    this dependency (see tests/conftest.py) to point at the test database instead."""
     db = SessionLocal()
     try:
         yield db

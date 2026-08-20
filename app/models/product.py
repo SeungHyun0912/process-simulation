@@ -15,4 +15,4 @@ class Product(TimestampMixin, Base):
     product_type: Mapped[str] = mapped_column(String(32), default="finished")
     unit: Mapped[str] = mapped_column(String(16), default="m")
     status: Mapped[str] = mapped_column(String(16), default="active")
-    cable_design: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    cable_design: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # domain-specific spec, e.g. {conductor, insulation, sheath} sub-structures

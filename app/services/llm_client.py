@@ -15,6 +15,9 @@ MODEL = "claude-opus-5"
 
 
 def extract_structured(system_prompt: str, user_content: str, json_schema: dict) -> dict:
+    """Call the LLM once and return its output already parsed as a dict matching json_schema.
+    output_config forces the model to conform to the schema, so json.loads here shouldn't
+    ever hit malformed JSON in practice."""
     settings = get_settings()
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 

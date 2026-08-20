@@ -11,7 +11,8 @@ import json
 
 
 def parse_csv(raw_bytes: bytes) -> list[dict]:
-    text = raw_bytes.decode("utf-8-sig")
+    """A CSV file is always exactly one table; first row is the header."""
+    text = raw_bytes.decode("utf-8-sig")  # utf-8-sig strips a BOM if Excel added one on export
     rows = list(csv.reader(io.StringIO(text)))
     if not rows:
         return []
@@ -20,6 +21,8 @@ def parse_csv(raw_bytes: bytes) -> list[dict]:
 
 
 def parse_json_records(records: list[dict]) -> list[dict]:
+    """A JSON array of objects becomes one table; headers are the union of all keys seen
+    across records (not just the first), so a sparse/inconsistent record shape isn't lossy."""
     if not records:
         return []
     headers = sorted({key for record in records for key in record.keys()})
@@ -28,6 +31,8 @@ def parse_json_records(records: list[dict]) -> list[dict]:
 
 
 def parse_json(raw_bytes: bytes) -> list[dict]:
+    """Accepts either a single JSON object or an array of objects; a lone object is treated
+    as a one-record array."""
     payload = json.loads(raw_bytes.decode("utf-8"))
     if isinstance(payload, dict):
         payload = [payload]
@@ -35,6 +40,8 @@ def parse_json(raw_bytes: bytes) -> list[dict]:
 
 
 def parse_xlsx(raw_bytes: bytes) -> list[dict]:
+    """One table per worksheet (unlike CSV/JSON, xlsx can carry several tables in one file);
+    empty sheets are skipped. data_only=True reads formula results, not the formulas themselves."""
     from openpyxl import load_workbook
 
     workbook = load_workbook(io.BytesIO(raw_bytes), data_only=True)
@@ -50,6 +57,8 @@ def parse_xlsx(raw_bytes: bytes) -> list[dict]:
 
 
 def parse_source(source_type: str, raw_bytes: bytes | None = None, payload: list | None = None) -> list[dict]:
+    """Single dispatch point used by the ingestion API regardless of upload shape (file vs.
+    inline JSON/array payload)."""
     if source_type == "csv":
         return parse_csv(raw_bytes)
     if source_type == "xlsx":

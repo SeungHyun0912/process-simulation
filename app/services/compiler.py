@@ -17,6 +17,8 @@ from app.models.recipe import Recipe
 from app.models.runtime_profile import RuntimeProfile
 from app.services.routing_validation import _link_entry_terminal_steps, build_validation_report
 
+# Used when a compile-run doesn't reference a named RuntimeProfile -- keeps compile/simulate
+# usable without forcing every caller to create a profile first.
 DEFAULT_RUNTIME_ECHO = {
     "time_unit": "day",
     "base_time_granularity": "minute",
@@ -35,6 +37,8 @@ DEFAULT_RUNTIME_ECHO = {
 
 
 def _runtime_echo(runtime_profile: RuntimeProfile | None) -> dict:
+    """Flatten a RuntimeProfile's three JSON blobs into the single runtime_echo dict the
+    simulator reads time_control/execution_mode/scenario_toggles keys from."""
     if runtime_profile is None:
         return dict(DEFAULT_RUNTIME_ECHO)
     return {
@@ -95,6 +99,8 @@ def _transition_type(from_step: ProcessStep, to_step_no: str, steps_by_no: dict[
 
 def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | None, db: Session) -> dict:
     """Return {"status": "success"|"blocked", "compiled_graph_object": dict|None, "validation_report": dict}."""
+    # Run the shared routing-level gates first, then layer on this module's own compile-only
+    # gate (unresolved processing time) -- see module docstring for why that split exists.
     report = build_validation_report(routing, db)
     blocking_errors = list(report["blocking_errors"])
 
@@ -110,6 +116,8 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
 
     combined_report = {**report, "blocking_errors": blocking_errors}
 
+    # Refuse to produce a compiled_graph_object at all if anything is blocking -- callers only
+    # ever get a usable graph together with a fully clean report.
     if blocking_errors or report["graph_completeness_status"] in ("incomplete", "blocked"):
         return {"status": "blocked", "compiled_graph_object": None, "validation_report": combined_report}
 
@@ -120,6 +128,8 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
     }
     steps_by_no = {s.step_no: s for s in routing.steps}
 
+    # One node/transition/resource-binding/processing-time-plan/queue-plan entry per step,
+    # assembled in a single pass over routing.steps below.
     nodes = []
     transitions = []
     resource_bindings = []
@@ -178,6 +188,9 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
             )
 
         if step.equipment_group:
+            # resource_key is the equipment_group string, not a specific Equipment row -- this
+            # is what lets several steps (even across products, see RoutingProductLink) share
+            # one simpy.Resource pool and actually contend for it in the simulator.
             group = db.query(EquipmentGroup).filter_by(group_id=step.equipment_group).one_or_none()
             members = db.query(Equipment).filter_by(group_id=step.equipment_group).all()
             resource_bindings.append(
@@ -185,12 +198,18 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
                     "step_no": step.step_no,
                     "resource_key": step.equipment_group,
                     "resource_type": "simpy.Resource",
+                    # Only worth pinning to a single physical unit when the group has exactly
+                    # one member -- otherwise which specific unit runs a given cycle is a
+                    # runtime detail the simulator, not the compiler, decides.
                     "resolved_resource_id": members[0].equipment_id if len(members) == 1 else None,
                     "capacity": group.capacity if (group and group.capacity) else 1,
                     "capacity_source": "master_data" if (group and group.capacity) else "default_resource_capacity",
                 }
             )
 
+        # Recipe.length_factor is only a fallback source for input_qty_per: the step's own
+        # (editable) value always wins when set. loss_rate has no step-level equivalent, so it
+        # comes from the recipe alone whenever one matches.
         recipe = _select_recipe(db, routing.product_id, step)
         length_factor = (recipe.length_factor or {}) if recipe else {}
         resolved_input_qty_per = (
@@ -213,6 +232,9 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
             }
         )
 
+        # Queue capacity comes from the input location's storage_capacity (the third capacity
+        # axis alongside equipment and inbound material, see docs/planning/00-overview.md) --
+        # missing/unset location capacity is treated as unbounded, not zero.
         input_location = (
             db.query(Location).filter_by(location_id=step.input_location_id).one_or_none()
             if step.input_location_id
@@ -230,6 +252,9 @@ def compile_routing(routing: ProcessRouting, runtime_profile: RuntimeProfile | N
             queue_entry["merge_policy"] = "wait_for_all_required_inputs"
         queue_plan.append(queue_entry)
 
+    # One entry per linked product (a plain 1-product routing has exactly one, its primary
+    # link) -- this is what lets the simulator later filter a shared network's results down
+    # to a single product's terminal steps.
     product_contexts = []
     for link in links:
         product = products_by_id[link.product_id]

@@ -48,10 +48,13 @@ _MINUTES_PER_UNIT = {"minute": 1, "hour": 60, "day": 24 * 60}
 
 
 def _to_minutes(value: float, unit: str) -> float:
+    """All internal sim time is minutes; every external duration is normalized through this."""
     return value * _MINUTES_PER_UNIT.get(unit, _MINUTES_PER_UNIT["day"])
 
 
 def _match_inbound_plan(step: dict, plans: list[dict]) -> dict | None:
+    """Pick the inbound plan feeding an entry step: match by item_id first, then prefer an
+    exact location match if the step specifies one, else fall back to the first candidate."""
     candidates = [p for p in plans if p["item_id"] == step["input_item_id"]]
     if not candidates:
         return None
@@ -69,6 +72,12 @@ def run_simulation(
     inbound_plans: list[dict],
     inbound_overrides: dict[str, float] | None = None,
 ) -> dict:
+    """Build and run one SimPy environment from a compiled_graph_object, returning the raw
+    event_log/wip_snapshots plus a derived summary. inbound_overrides lets a caller replace a
+    named material_inbound_plan's quantity for one run (e.g. a what-if scenario) without
+    mutating the stored plan."""
+    # Index every compiled_graph_object list by step_no/resource_key up front so the rest of
+    # this function (and the per-step generators below) can do O(1) lookups instead of scans.
     nodes = {n["step_no"]: n for n in compiled_graph_object["nodes"]}
     proc_by_step = {p["step_no"]: p for p in compiled_graph_object["processing_time_plan"]}
     queue_by_step = {q["step_no"]: q for q in compiled_graph_object["queue_plan"]}
@@ -79,6 +88,8 @@ def run_simulation(
         rb["resource_key"]: rb["capacity"] for rb in compiled_graph_object["resource_bindings"]
     }
 
+    # predecessors also doubles as "which steps have no upstream step" (empty list), used
+    # below to decide which steps are entry points that should get an inbound_process.
     predecessors: dict[str, list[str]] = {step_no: [] for step_no in nodes}
     transitions_by_from: dict[str, list[dict]] = {step_no: [] for step_no in nodes}
     transitions_by_to: dict[str, list[dict]] = {step_no: [] for step_no in nodes}
@@ -92,6 +103,10 @@ def run_simulation(
 
     env = simpy.Environment()
 
+    # One simpy.Container per (step, predecessor) pair, not one per step: this is what lets a
+    # merge step track each incoming branch's supply independently (needed for asymmetric BOM
+    # consumption_ratio). A step with no predecessor gets a single "__inbound__" container fed
+    # directly by inbound_process instead.
     containers: dict[str, dict[str, simpy.Container]] = {}
     for step_no, node in nodes.items():
         capacity = queue_by_step.get(step_no, {}).get("capacity") or float("inf")
@@ -101,6 +116,8 @@ def run_simulation(
         else:
             containers[step_no] = {"__inbound__": simpy.Container(env, capacity=capacity, init=0)}
 
+    # Resources are keyed by resource_key (equipment_group), not step_no -- built once here for
+    # the whole graph so steps that share a resource_key genuinely contend for the same pool.
     resources = {key: simpy.Resource(env, capacity=cap) for key, cap in resource_capacity.items()}
 
     event_log: list[dict] = []
@@ -242,6 +259,9 @@ def run_simulation(
             yield env.process(put_downstream(step_no, yield_qty))
 
     def inbound_process(step_no: str, plan: dict):
+        """Delivers plan["inbound_qty"] into an entry step's container on a fixed cadence,
+        forever, for the life of the run -- an inbound_overrides entry replaces the quantity
+        (not the cadence) for this one run only."""
         container = containers[step_no]["__inbound__"]
         qty = inbound_overrides.get(plan["plan_id"], plan["inbound_qty"])
         interval_minutes = _to_minutes(plan["interval_value"], plan["interval_unit"])
@@ -253,11 +273,15 @@ def run_simulation(
             yield env.timeout(interval_minutes)
 
     def wip_snapshot_process(interval_minutes: float):
+        """Periodically records total/by-step work-in-progress (summed container levels) so
+        avg_wip in the summary is a time-sampled average, not derived from the event log."""
         while True:
             by_step = {step_no: sum(c.level for c in conts.values()) for step_no, conts in containers.items()}
             wip_snapshots.append({"sim_time": env.now, "total_wip": sum(by_step.values()), "by_step": by_step})
             yield env.timeout(interval_minutes)
 
+    # Every step gets its own always-running step_process; only steps with no predecessor
+    # (true entry points) additionally get an inbound_process to actually feed them material.
     for step_no, node in nodes.items():
         env.process(step_process(step_no))
         if not predecessors[step_no]:
@@ -274,6 +298,9 @@ def run_simulation(
 
     env.run(until=end_time)
 
+    # exit_qty_by_step is the per-terminal-step breakdown a caller can filter down to one
+    # product's own terminal steps (see product_contexts) to get that product's throughput out
+    # of a shared multi-product network.
     exit_qty = sum(e["qty"] for e in event_log if e["event_type"] == "exit")
     exit_qty_by_step: dict[str, float] = {}
     for e in event_log:
@@ -282,11 +309,15 @@ def run_simulation(
     throughput_per_day = exit_qty / (end_time / _MINUTES_PER_UNIT["day"]) if end_time else 0.0
     avg_wip = sum(s["total_wip"] for s in wip_snapshots) / len(wip_snapshots) if wip_snapshots else None
     throughput_rate = exit_qty / end_time if end_time else 0.0
+    # Little's Law (L = lambda * W => W = L / lambda): the only lead-time estimate available
+    # in this chunked model, since individual units aren't tracked end-to-end (module docstring).
     avg_lead_time = (avg_wip / throughput_rate) if (avg_wip is not None and throughput_rate > 0) else None
 
     resource_utilization = {
         key: (busy / end_time if end_time else 0.0) for key, busy in busy_time_by_resource.items()
     }
+    # The bottleneck is simply whichever resource was busiest; resolved back to a step_no
+    # since that's more actionable for a caller than a raw equipment_group key.
     bottleneck_step_no = None
     if resource_utilization:
         bottleneck_resource = max(resource_utilization, key=resource_utilization.get)

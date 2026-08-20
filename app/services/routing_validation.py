@@ -28,6 +28,8 @@ def _live_entry_terminal_steps(routing: ProcessRouting) -> tuple[list[str], list
 
 
 def _link_entry_terminal_steps(routing: ProcessRouting, link: RoutingProductLink) -> tuple[list[str], list[str]]:
+    """Entry/terminal steps for one product's view of the routing: live-computed for the
+    primary link (see _live_entry_terminal_steps), or the fork's own stored boundaries."""
     if link.is_primary:
         return _live_entry_terminal_steps(routing)
     return list(link.entry_step_nos or []), list(link.terminal_step_nos or [])
@@ -57,6 +59,9 @@ def extract_product_subgraph(routing: ProcessRouting, link: RoutingProductLink) 
 
 
 def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
+    """Run every graph_validation_rule (module docstring) against one routing's current steps,
+    updating each step's reference_status and the routing's graph_completeness_status as a
+    side effect. Returns the shared report shape consumed by /validate, /publish, and compile."""
     steps = routing.steps
     step_nos = {s.step_no for s in steps}
     blocking_errors = []
@@ -68,6 +73,8 @@ def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
         )
 
     for step in steps:
+        # A step must declare at least one output item -- otherwise there's nothing for a
+        # transition or the compiler to route/split downstream.
         if not step.outputs:
             blocking_errors.append(
                 {
@@ -78,6 +85,8 @@ def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
             )
         else:
             output_item_ids = {o.output_item_id for o in step.outputs}
+            # Ratios not summing to 1.0 is only a warning, not a block: scrap/loss or an
+            # intentional yield increase can legitimately push the sum away from 1.0.
             ratio_sum = sum(o.output_ratio for o in step.outputs)
             if abs(ratio_sum - 1.0) > 1e-6:
                 warnings.append(
@@ -102,6 +111,9 @@ def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
                 )
 
             if step.outputs:
+                # A co-product step (more than one declared output) needs every outgoing
+                # transition to say which output item it carries -- otherwise the compiler/
+                # simulator can't tell which of the step's outputs feeds which successor.
                 if transition.output_item_id is None and len(step.outputs) > 1:
                     blocking_errors.append(
                         {
@@ -125,6 +137,9 @@ def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
                         }
                     )
 
+        # A step can reference an equipment_group before that master-data row exists (e.g.
+        # during early/provisional authoring) -- that's a blocking error, but we still record
+        # the resolution outcome on reference_status so the UI can show it either way.
         if step.equipment_group:
             resolved = (
                 db.query(EquipmentGroup).filter_by(group_id=step.equipment_group).one_or_none()
@@ -187,6 +202,8 @@ def build_validation_report(routing: ProcessRouting, db: Session) -> dict:
                     }
                 )
 
+    # Completeness is a coarse status derived from the checks above: no steps yet, blocked by
+    # a hard error, still has provisional (unofficial) steps, or fully resolved.
     if not steps:
         completeness = "incomplete"
     elif blocking_errors:

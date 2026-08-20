@@ -80,6 +80,8 @@ def _is_flat_field(path: str, prefix: str) -> bool:
 
 
 def _fields_for_entity(db: Session, entity_key: str) -> list[MetaFieldMapping]:
+    """Every registered field whose path_patterns include at least one flat path under this
+    entity's prefix (see module docstring for why this matches by path prefix, not entity_scope)."""
     prefix = PROMOTABLE_ENTITIES[entity_key]
     return [
         m for m in db.query(MetaFieldMapping).all() if any(_is_flat_field(p, prefix) for p in m.path_patterns)
@@ -87,6 +89,10 @@ def _fields_for_entity(db: Session, entity_key: str) -> list[MetaFieldMapping]:
 
 
 def build_extraction_schema(db: Session, entity_key: str) -> dict:
+    """Build the json_schema handed to the LLM for one entity: a `column_mappings` array (which
+    raw header maps to which canonical field, and how confidently) plus a `records` array typed
+    from that entity's actual field registry. The natural key field is forced non-nullable/
+    non-optional-enum so the LLM can't silently omit the field promote_draft() dedupes on."""
     fields = _fields_for_entity(db, entity_key)
     natural_key = NATURAL_KEY_FIELD[entity_key]
 
@@ -131,6 +137,9 @@ def build_extraction_schema(db: Session, entity_key: str) -> dict:
 
 
 def classify_entity(table_name: str, headers: list[str]) -> str | None:
+    """Which promotable entity a raw table represents, or None if it doesn't fit any.
+    Cheap substring match on the table name first; only falls through to an LLM call when
+    the name itself doesn't already give it away."""
     normalized = table_name.lower().replace("_", "").replace(" ", "")
     for entity_key in PROMOTABLE_ENTITIES:
         if entity_key.replace("_", "") in normalized:
@@ -156,6 +165,8 @@ def classify_entity(table_name: str, headers: list[str]) -> str | None:
 
 
 def extract_table(db: Session, entity_key: str, headers: list[str], rows: list[list]) -> dict:
+    """Run the LLM extraction for one already-classified table, capping how many rows are sent
+    in a single call (MAX_ROWS_PER_EXTRACTION) to keep the prompt/response within budget."""
     schema = build_extraction_schema(db, entity_key)
     sample_rows = rows[:MAX_ROWS_PER_EXTRACTION]
     dropped = len(rows) - len(sample_rows)
@@ -179,6 +190,10 @@ def extract_table(db: Session, entity_key: str, headers: list[str], rows: list[l
 
 
 def run_ingestion_job(db: Session, upload_job: UploadJob, tables: list[dict]) -> None:
+    """Classify + extract every table in one upload, writing one UploadJobDraft (for human
+    review) and its column mappings per successfully-classified table. Unclassifiable tables
+    are silently skipped rather than failing the whole job -- a single upload can legitimately
+    mix recognizable master-data sheets with unrelated ones."""
     drafts_created = 0
     for table in tables:
         entity_key = classify_entity(table["name"], table["headers"])
@@ -216,6 +231,8 @@ def run_ingestion_job(db: Session, upload_job: UploadJob, tables: list[dict]) ->
                 )
             )
 
+    # The job only fails outright if literally nothing could be classified; any successful
+    # draft is enough to hand the job to a human reviewer.
     upload_job.status = "awaiting_review" if drafts_created > 0 else "failed"
     if drafts_created == 0:
         upload_job.error_message = "no table could be classified into a known entity"
@@ -246,6 +263,10 @@ def record_field_aliases(db: Session, upload_job: UploadJob) -> None:
 
 
 def promote_draft(db: Session, draft: UploadJobDraft) -> dict:
+    """Insert a reviewed draft's records into their real master-data table. Best-effort per
+    record, not all-or-nothing: a record missing its natural key, colliding with an existing
+    row, or failing an FK check is skipped (with a reason) rather than aborting the whole
+    draft, since one bad row in an LLM-extracted batch shouldn't block the rest."""
     model = PROMOTION_MODEL[draft.entity_key]
     natural_key = NATURAL_KEY_FIELD[draft.entity_key]
     fk_checks = FK_CHECKS.get(draft.entity_key, [])
@@ -263,6 +284,9 @@ def promote_draft(db: Session, draft: UploadJobDraft) -> dict:
             skipped.append({"record": record, "reason": f"{natural_key} {key_value} already exists"})
             continue
 
+        # Verify every declared FK-like field (FK_CHECKS) actually resolves before inserting --
+        # the LLM extracted these as plain strings, so nothing enforces referential integrity
+        # until this point.
         fk_failure = None
         for field_name, ref_model, ref_key, required in fk_checks:
             value = record.get(field_name)
@@ -277,6 +301,8 @@ def promote_draft(db: Session, draft: UploadJobDraft) -> dict:
             skipped.append({"record": record, "reason": fk_failure})
             continue
 
+        # Drop nulls rather than passing them through: lets the model's own column defaults
+        # apply instead of explicitly overwriting them with None.
         clean = {k: v for k, v in record.items() if v is not None}
         db.add(model(**clean))
         created.append(key_value)
