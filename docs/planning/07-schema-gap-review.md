@@ -42,9 +42,11 @@ P2/P3 구현 당시 이미 문서에 남긴 것들 — 재확인만:
 
 **Phase C 구현**: FK를 새로 추가하는 대신 `docs/schema/simpy-schema-compiler.json`의 `recipe_selection_rules`(정확 매치 → 그룹 매치 → 제품-무관 폴백)를 그대로 구현한 `compiler.py::_select_recipe(db, product_id, step)`로 컴파일 시점에 매칭한다. 매칭된 레시피의 `length_factor.input_per_output`은 스텝 자신의 `input_qty_per`가 비어 있을 때만 폴백으로 쓰이고(둘 다 이미 스키마에 있던 "같은 값의 대안 출처"이므로), `loss_rate`는 레시피에만 있는 값이라 무조건 그대로 노출된다. 두 값 모두 `processing_time_plan[].{recipe_id, input_qty_per, input_qty_per_source, loss_rate}`로 컴파일 결과에 노출되고, `simulation.py::step_process`가 이를 읽어 (1) non-merge 스텝의 입력 컨테이너 소비량을 `input_qty_per`만큼 스케일링(merge 스텝은 이미 3-2의 `consumption_ratio`가 같은 역할을 하므로 대상 아님), (2) 처리 후 산출량에 `qty * (1 - loss_rate)`를 적용해 하류로 넘기되, 자원 점유 시간(`proc_time`)은 로스 반영 전 `qty` 기준으로 유지(설비는 로스분까지 포함해 실제로 가공한 시간만큼 점유한다는 의미) — 하는 것으로 연결했다. `loss_rate > 0`인 사이클마다 `"loss"` 이벤트를 로그에 남겨 사후 관측 가능하게 했다.
 
-### 3-4. setup_time이 "스텝당 평생 1회"로 고정
+### 3-4. setup_time이 "스텝당 평생 1회"로 고정 — **Phase D로 해결됨**
 
 `simulation.py:113, 138-139` — `setup_remaining`을 프로세스 시작 시 한 번만 초기화하고, 첫 사이클에서 소진되면 그걸로 끝이다. 실제 공장에서는 같은 설비에서 **제품/레시피가 바뀔 때마다** 셋업(교체) 시간이 반복 발생하는데, 지금은 "이 스텝이 시뮬레이션 내내 한 번도 셋업을 다시 안 한다"고 가정한 것과 같다. 다품종 생산 라인을 표현하려면 이 부분도 손봐야 한다.
+
+**Phase D 구현**: 현재 스키마에서 한 스텝(step_no)은 항상 같은 입력/레시피를 처리하도록 고정돼 있으므로("이 스텝이 시뮬레이션 내내 다른 걸 만들기 시작한다"는 케이스가 없음), changeover가 실제로 발생할 수 있는 유일한 지점은 **여러 스텝이 같은 물리 설비(`resource_key`=`equipment_group`)를 나눠 쓰는 경우**뿐이다(3-5/Phase B의 멀티 제품 공유 네트워크, 또는 한 라우팅 안에서 같은 설비를 쓰는 여러 스텝). 그래서 새 FK나 필드 없이, `run_simulation()`에 `resource_key -> 마지막으로 그 설비를 쓴 step_no` 맵(`resource_last_identity`)을 두고, 스텝이 자원을 실제로 획득한 시점에 "마지막 사용자 step_no가 나와 다르면" `setup_time`을 부과하도록 바꿨다. 이렇게 하면 한 설비를 혼자 쓰는 스텝은 이전과 동일하게 딱 한 번만(최초 획득 시) 셋업을 물고, 다른 스텝과 같은 설비를 번갈아 쓰는 경우에만 전환마다 반복 부과된다 — 기존 동작을 깨지 않으면서 일반화한 것. 자원이 없는 스텝(설비 미지정)은 여전히 "평생 1회"만 부과(전환을 걸 수 있는 공유 자원 개념이 없으므로). capacity>1인 설비 풀은 물리적 개별 유닛이 아니라 풀 전체에 대해 identity 하나만 추적하는 근사치임을 문서화해뒀다. `loss`/`exit` 이벤트와 같은 관례로 `"setup"` 이벤트를 로그에 남기되(관측용), `SimulationEventLog`가 이미 갖고 있는 범용 `qty` 컬럼을 재사용해 셋업 소요시간을 실어보낸다(신규 컬럼/마이그레이션 불필요).
 
 ### 3-5. 여러 제품이 같은 설비를 두고 실제로 경쟁하는 상황을 표현 못함
 
@@ -85,7 +87,7 @@ process_step_transition
 | 3-5 멀티 제품 자원 경합 | 높음 | "실제 공장 전체 용량"을 보려는 목적과 직결되는데 지금 구조로는 원천적으로 불가 | **완료 (Phase B)** |
 | 3-3 Recipe 수율/로스 미연결 | 중간 | 필드는 있으니 컴파일러/시뮬레이터 연결만 하면 됨 — 상대적으로 저비용 | **완료 (Phase C)** |
 | 3-2 Merge 비대칭 소비(BOM) | 중간 | 3-1과 같은 근본 원인이라 함께 해결 가능 | **완료 (Phase A)** |
-| 3-4 setup_time 1회성 | 낮음~중간 | 다품종 라인이 아니면 영향 적음 | 미착수 |
+| 3-4 setup_time 1회성 | 낮음~중간 | 다품종 라인이 아니면 영향 적음 | **완료 (Phase D)** |
 | 3-6 condition 미평가 | 낮음 | 정적 비율(3-1)로 상당수 케이스 대체 가능, 나머지는 별도 규칙 엔진 필요 | 미착수 |
 
 ## 6. 3-5 해결 방향 구성 (B안: 공유 네트워크 + Routing-Product Link)
@@ -167,7 +169,7 @@ class RoutingProductLink(TimestampMixin, Base):
 | 3-5 멀티 제품 자원 경합(`RoutingProductLink`, 6-2/6-4/6-5/6-6) | 높음 | 2순위 — 3-1 위에 얹는 얇은 레이어라 3-1 직후 바로 착수 가능 | **완료** |
 | 3-3 Recipe 수율/로스 미연결 | 중간 | 그대로 | **완료 (Phase C)** |
 | 3-2 Merge 비대칭 소비 | 중간 | 3-1과 같은 테이블(`process_step_input`)로 함께 처리 → 실제로는 `consumption_ratio`로 흡수 | **완료** |
-| 3-4 setup_time 1회성 | 낮음~중간 | 그대로 | 미착수 |
+| 3-4 setup_time 1회성 | 낮음~중간 | 그대로 | **완료 (Phase D)** |
 | 3-6 condition 미평가 | 낮음 | 그대로 | 미착수 |
 
 **Phase B 구현에서 확인된 사항**:

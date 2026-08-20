@@ -101,6 +101,8 @@ P4를 P0~P3 이후에 두는 이유: LLM 매핑의 목표 스키마(Meta Schema)
 
 **Phase C (Recipe 수율/로스 연결, 07번 문서 3-3) 구현 완료**: `Recipe.length_factor`(`input_per_output`/`loss_rate`)가 정의만 되고 컴파일러·시뮬레이터 어디에도 읽히지 않던 "죽은 데이터" 문제를 해결했다. 새 FK 없이 `compiler.py::_select_recipe`가 `simpy-schema-compiler.json`의 `recipe_selection_rules`(정확 매치 → 그룹 매치 → 제품-무관 폴백)로 스텝마다 레시피를 매칭하고, `processing_time_plan`에 `recipe_id`/`input_qty_per`/`input_qty_per_source`/`loss_rate`를 노출한다(스텝 자신의 `input_qty_per`가 있으면 그 값이 레시피보다 우선). `simulation.py::step_process`는 이 값으로 (1) 입력 컨테이너 소비량을 `input_qty_per`만큼 스케일링, (2) 산출량에 `qty * (1 - loss_rate)`를 적용해 하류로 넘기되 자원 점유 시간은 로스 반영 전 수량 기준으로 유지한다. `input_per_output=2.0`(원료 2단위당 완제품 1단위)·`loss_rate=0.1`(10% 로스)인 레시피로 원료 100단위 투입 시 정확히 45단위가 산출되는 것을 API 전체 스택(DB→컴파일러→시뮬레이터)으로 재현해 확인했다.
 
+**Phase D (setup_time changeover 반복, 07번 문서 3-4) 구현 완료**: `setup_time`이 스텝 생애 최초 1회만 부과되던 것을, **같은 설비(`resource_key`)를 마지막으로 쓴 step_no와 다를 때마다** 다시 부과하도록 바꿨다. 지금 스키마에서 한 스텝은 항상 같은 입력/레시피를 처리하므로, changeover가 실제로 의미를 갖는 유일한 지점은 여러 스텝이 같은 설비를 나눠 쓰는 경우(Phase B의 멀티 제품 공유 네트워크 포함)뿐이라는 점을 이용해, 새 필드 없이 `run_simulation()` 내부 `resource_last_identity` 맵 하나로 구현했다. 설비를 혼자 쓰는 스텝은 기존과 동일하게 최초 1회만 셋업을 물고(하위호환), 다른 스텝과 설비를 번갈아 쓰는 경우에만 전환마다 반복 부과된다. "두 스텝이 같은 설비를 공유하고 매일 서로 번갈아 처리한다" 시나리오를 API 전체 스택으로 재현해, 30일 동안 매 사이클마다 두 스텝 모두 각자의 `setup_time`이 정확히 반복 부과되는 것을 확인했다.
+
 ## 5. 미해결 전제 (다음 대화에서 확인 필요)
 
 - RDB 종류 미확정 (PostgreSQL 가정하고 진행, JSONB 활용 전제) — [`04-rdb-design.md`](./04-rdb-design.md) 참고.

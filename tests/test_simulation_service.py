@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.simulation import run_simulation
 
 TIME_CONTROL_1_DAY = {"duration_days": 1}  # 1440 minutes
@@ -371,6 +373,87 @@ def test_input_qty_per_and_loss_rate_combine_with_recipe_selection_from_compiler
 
     # 100 input / 2 per output = 50 units processed, then 10% loss -> 45 exit.
     assert result["summary"]["throughput_total"] == 45.0
+
+
+def test_setup_time_charged_once_when_step_never_changes_on_its_resource():
+    # docs/planning/07-schema-gap-review.md 3-4: a step with sole use of its equipment_group
+    # never sees the resource's "last processed step" change away from itself, so setup_time
+    # is still charged only on the very first cycle -- old behavior, now derived from the
+    # changeover rule rather than a separate "first cycle only" flag.
+    graph = {
+        "nodes": [_node("1")],
+        "transitions": [],
+        "resource_bindings": [_resource_binding("1", "R1", 1)],
+        "processing_time_plan": [_proc("1", std_time_per=1.0, setup_time=5)],
+        "queue_plan": [{"step_no": "1", "capacity": None}],
+    }
+    inbound_plans = [_inbound_plan("PLAN-1", "ITEM-IN-1", 100_000)]
+
+    result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
+
+    # Cycle 1: 500 qty * 1.0 + 5 setup = 505min, ends at t=505.
+    # Cycle 2: same step, resource identity unchanged -> no setup: 500 * 1.0 = 500min, ends at t=1005.
+    # Cycle 3 would end at 1005 + 505 (with no setup would be 500) > 1440 -- never completes.
+    process_events = [e for e in result["event_log"] if e["event_type"] == "process"]
+    assert [e["qty"] for e in process_events] == [500, 500]
+    setup_events = [e for e in result["event_log"] if e["event_type"] == "setup"]
+    assert len(setup_events) == 1
+    assert setup_events[0]["qty"] == 5  # qty carries the setup/changeover duration here
+    assert result["summary"]["throughput_total"] == 1000
+
+
+def test_setup_time_repeats_on_every_changeover_between_steps_sharing_a_resource():
+    # Step "0" (no resource) delays step "2"'s supply until well after step "1" has already
+    # finished on the shared resource and gone idle waiting for more input that never
+    # arrives -- so step "1" is guaranteed to acquire R-SHARED first, and step "2" is
+    # guaranteed to acquire it only after step "1" fully releases it. That makes the
+    # resource's last-identity switch from "1" to "2" deterministic:
+    #   step 1: qty=10, std_time_per=1.0, setup_time=5 -> first-ever use of R-SHARED
+    #     (changeover from None) -> proc_time = 10*1 + 5 = 15, runs t=[0, 15).
+    #   step 0: qty=5, std_time_per=1.0, no resource -> proc_time = 5, runs t=[0, 5),
+    #     hands 5 units to step "2" at t=5 (step "2" then queues for R-SHARED until t=15).
+    #   step 2: qty=5, std_time_per=1.0, setup_time=7 -> changeover from "1" -> "2"
+    #     -> proc_time = 5*1 + 7 = 12, runs t=[15, 27).
+    graph = {
+        "nodes": [
+            _node("1"),
+            _node("0"),
+            _node("2"),
+        ],
+        "transitions": [_transition("0", "2")],
+        "resource_bindings": [
+            _resource_binding("1", "R-SHARED", 1),
+            _resource_binding("2", "R-SHARED", 1),
+        ],
+        "processing_time_plan": [
+            _proc("1", std_time_per=1.0, setup_time=5),
+            _proc("0", std_time_per=1.0),
+            _proc("2", std_time_per=1.0, setup_time=7),
+        ],
+        "queue_plan": [
+            {"step_no": "1", "capacity": None},
+            {"step_no": "0", "capacity": None},
+            {"step_no": "2", "capacity": None},
+        ],
+    }
+    inbound_plans = [
+        _inbound_plan("PLAN-1", "ITEM-IN-1", 10),
+        _inbound_plan("PLAN-0", "ITEM-IN-0", 5),
+    ]
+
+    result = run_simulation(graph, TIME_CONTROL_1_DAY, OUTPUT_CONTROL, inbound_plans)
+
+    process_events = {e["step_no"]: e for e in result["event_log"] if e["event_type"] == "process"}
+    assert process_events["1"]["sim_time"] == 0
+    assert process_events["2"]["sim_time"] == 15
+
+    setup_events = {e["step_no"]: e for e in result["event_log"] if e["event_type"] == "setup"}
+    assert setup_events["1"]["qty"] == 5  # changeover from no prior user of R-SHARED
+    assert setup_events["2"]["qty"] == 7  # changeover from step "1" to step "2"
+
+    assert result["summary"]["resource_utilization"]["R-SHARED"] == pytest.approx(27 / 1440)
+    # Step "1" is also terminal (no outgoing transition), so it exits its own 10 units too.
+    assert result["summary"]["exit_qty_by_step"] == {"1": 10.0, "2": 5.0}
 
 
 def test_shared_resource_serializes_contending_steps():

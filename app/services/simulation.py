@@ -17,7 +17,17 @@ roadmap; extend these as real usage demands it):
 - Continuous steps process in chunks of up to CHUNK_QTY_CAP units per
   resource-hold cycle (not unit-by-unit) so a 30-day run stays a few hundred
   events per step instead of millions. Batch steps process exactly one batch
-  per cycle. setup_time is applied once, on a step's first cycle only.
+  per cycle. setup_time is charged as a changeover cost: once whenever a
+  resource_key's last-processed step_no differs from the step now acquiring
+  it (docs/planning/07-schema-gap-review.md 3-4), not just on a step's very
+  first cycle. A step that has its equipment_group all to itself therefore
+  still only ever pays setup once (nothing else changes the resource's
+  identity), matching the old behavior; it repeats only when steps sharing
+  the same resource_key actually alternate. Steps with no bound resource
+  keep the strict "once ever" rule, since there's no resource identity to
+  key a changeover off of. For a resource pool with capacity > 1, a single
+  last-identity is tracked for the whole pool rather than per physical
+  unit -- a deliberate approximation, not per-unit changeover tracking.
 - Lead time is estimated via Little's Law (avg_wip / throughput_rate), not by
   tracking individual unit dwell time -- there's no per-unit identity in this
   chunked model.
@@ -96,6 +106,9 @@ def run_simulation(
     event_log: list[dict] = []
     wip_snapshots: list[dict] = []
     busy_time_by_resource = {key: 0.0 for key in resources}
+    # resource_key -> step_no that last held it; a changeover (and setup_time) is charged
+    # whenever the step now acquiring the resource differs from this (see step_process).
+    resource_last_identity: dict[str, str] = {}
 
     def put_downstream(from_step_no: str, qty: float):
         """Split qty across this step's declared outputs (by output_ratio), then across whichever
@@ -135,7 +148,8 @@ def run_simulation(
         is_merge = node["flow_type"] == "merge"
         is_batch = node["production_type"] == "batch"
         std_time_per = proc["std_time_per"]
-        setup_remaining = proc.get("setup_time") or 0
+        setup_time = proc.get("setup_time") or 0
+        unbound_setup_pending = setup_time > 0  # only meaningful when resource is None, see below
         batch_size = node.get("batch_size") or 1
         # input_qty_per (recipe length_factor fallback, see app/services/compiler.py
         # _select_recipe) scales how much is consumed from a *single* input container per
@@ -170,16 +184,25 @@ def run_simulation(
                         yield container.get(extra * input_per_output)
                         qty += extra
 
-            proc_time = (qty / batch_size if is_batch else qty) * std_time_per + setup_remaining
-            setup_remaining = 0
+            base_time = (qty / batch_size if is_batch else qty) * std_time_per
 
             if resource is not None:
                 with resource.request() as req:
                     yield req
+                    # Changeover: charge setup_time whenever the resource's last-processed
+                    # step differs from this one (including the very first-ever acquisition).
+                    # A step with sole use of its resource therefore still only pays setup once.
+                    changeover = resource_last_identity.get(resource_key) != step_no
+                    resource_last_identity[resource_key] = step_no
+                    applied_setup_time = setup_time if changeover else 0
+                    proc_time = base_time + applied_setup_time
                     start_time = env.now
                     yield env.timeout(proc_time)
                     busy_time_by_resource[resource_key] += env.now - start_time
             else:
+                applied_setup_time = setup_time if unbound_setup_pending else 0
+                unbound_setup_pending = False
+                proc_time = base_time + applied_setup_time
                 start_time = env.now
                 yield env.timeout(proc_time)
 
@@ -192,6 +215,19 @@ def run_simulation(
                     "qty": qty,
                 }
             )
+            if applied_setup_time > 0:
+                # qty here is the setup/changeover duration, not a material quantity -- same
+                # "reuse qty for the event's magnitude" convention as the "loss" event above,
+                # since SimulationEventLog only persists a generic qty/item_id per event.
+                event_log.append(
+                    {
+                        "sim_time": start_time,
+                        "event_type": "setup",
+                        "step_no": step_no,
+                        "resource_key": resource_key,
+                        "qty": applied_setup_time,
+                    }
+                )
 
             yield_qty = qty * (1 - loss_rate)
             if loss_rate > 0:
